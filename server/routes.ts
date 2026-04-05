@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { execSync } from "child_process";
 import type {
   GaugeData, TimeSeriesPoint, ForecastData, WeatherData, EnsembleData,
   GaugesResponse, ConfluenceSync, BasinTrend, FrostData, QPFData, NewsData, NewsItem,
@@ -8,6 +9,9 @@ import type {
 
 const USER_AGENT = "(binghamton-flood-dashboard, contact@example.com)";
 const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+const LONG_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const IMAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const SPC_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 interface CacheEntry<T> {
   data: T;
@@ -16,11 +20,11 @@ interface CacheEntry<T> {
 
 const cache: Record<string, CacheEntry<any>> = {};
 
-function getCached<T>(key: string): { data: T; stale: boolean } | null {
+function getCached<T>(key: string, ttl = CACHE_TTL): { data: T; stale: boolean } | null {
   const entry = cache[key];
   if (!entry) return null;
   const age = Date.now() - entry.timestamp;
-  if (age < CACHE_TTL) return { data: entry.data, stale: false };
+  if (age < ttl) return { data: entry.data, stale: false };
   return { data: entry.data, stale: true };
 }
 
@@ -61,9 +65,11 @@ const GAUGE_CONFIG: Array<{
   { id: "01502632", name: "Windsor", river: "Susquehanna River", thresholds: { action: 8, minor: 10 } },
   { id: "01512780", name: "Binghamton", river: "Susquehanna River", thresholds: { action: 12, minor: 15 }, isBinghamton: true },
   { id: "01511000", name: "Whitney Point Lake", river: "Tioughnioga River (Dam)", thresholds: {}, isReservoir: true, parameterCd: "62614", conservationPool: 973, floodPool: 1047.5 },
+  { id: "01499500", name: "East Sidney Lake", river: "Ouleout Creek (Dam)", thresholds: {}, isReservoir: true, parameterCd: "62614", conservationPool: 1110, floodPool: 1213 },
+  { id: "01500000", name: "East Sidney Outflow", river: "Ouleout Creek", thresholds: {} },
+  { id: "01531000", name: "Chemung", river: "Chemung River", thresholds: { action: 11, minor: 13, moderate: 17, major: 20 } },
 ];
 
-// NWS site ID -> USGS site ID mapping for ensemble data
 const NWS_TO_USGS: Record<string, string> = {
   "CKLN6": "01503000",
   "VSTN6": "01513500",
@@ -91,7 +97,6 @@ function computeRecessionRate(series: TimeSeriesPoint[]): { rate: number | null;
   const now = new Date(valid[valid.length - 1].timestamp).getTime();
   const target24h = now - 24 * 3600 * 1000;
 
-  // Find closest point to 24h ago
   let closest = valid[0];
   let closestDiff = Math.abs(new Date(valid[0].timestamp).getTime() - target24h);
   for (const p of valid) {
@@ -102,7 +107,6 @@ function computeRecessionRate(series: TimeSeriesPoint[]): { rate: number | null;
     }
   }
 
-  // Only compute if we found a point within 6 hours of the 24h-ago target
   if (closestDiff > 6 * 3600 * 1000) return { rate: null, phase: null };
 
   const currentVal = valid[valid.length - 1].value!;
@@ -110,17 +114,12 @@ function computeRecessionRate(series: TimeSeriesPoint[]): { rate: number | null;
   const hoursDiff = (now - new Date(closest.timestamp).getTime()) / 3600000;
   if (hoursDiff < 1) return { rate: null, phase: null };
 
-  // rate = (past - current) / days — positive means falling
   const rate = (pastVal - currentVal) / (hoursDiff / 24);
 
   let phase: "FAST_RECESSION" | "BASEFLOW" | "LOADING" | null = null;
-  if (rate < 0) {
-    phase = "LOADING"; // rising
-  } else if (rate >= 0.5) {
-    phase = "FAST_RECESSION";
-  } else {
-    phase = "BASEFLOW";
-  }
+  if (rate < 0) phase = "LOADING";
+  else if (rate >= 0.5) phase = "FAST_RECESSION";
+  else phase = "BASEFLOW";
 
   return { rate: Math.round(rate * 100) / 100, phase };
 }
@@ -136,20 +135,13 @@ function computeConfluenceSync(gauges: GaugeData[]): ConfluenceSync {
   let riskLevel: ConfluenceSync["riskLevel"] = "LOW";
 
   if (conklinTrend === "Rising" && chenangoTrend === "Rising") {
-    state = "BOTH_RISING";
-    riskLevel = "HIGH";
+    state = "BOTH_RISING"; riskLevel = "HIGH";
   } else if (conklinTrend === "Falling" && chenangoTrend === "Falling") {
-    state = "BOTH_FALLING";
-    riskLevel = "LOW";
+    state = "BOTH_FALLING"; riskLevel = "LOW";
   } else if (conklinTrend === "Rising" && (chenangoTrend === "Falling" || chenangoTrend === "Steady")) {
-    state = "SUSQ_RISING_CHEN_FALLING";
-    riskLevel = "MODERATE";
+    state = "SUSQ_RISING_CHEN_FALLING"; riskLevel = "MODERATE";
   } else if (chenangoTrend === "Rising" && (conklinTrend === "Falling" || conklinTrend === "Steady")) {
-    state = "CHEN_RISING_SUSQ_FALLING";
-    riskLevel = "MODERATE";
-  } else {
-    state = "STABLE";
-    riskLevel = "LOW";
+    state = "CHEN_RISING_SUSQ_FALLING"; riskLevel = "MODERATE";
   }
 
   return { state, conklinTrend, chenangoTrend, riskLevel };
@@ -188,17 +180,20 @@ function degreesToCardinal(deg: number): string {
   return dirs[Math.round(deg / 22.5) % 16];
 }
 
+function cToF(c: number | null): number | null {
+  if (c === null || c === undefined) return null;
+  return Math.round((c * 9 / 5 + 32) * 10) / 10;
+}
+
 // --- Fetch Functions ---
 
 async function fetchGaugeData(): Promise<GaugesResponse> {
-  // Split gauges: regular (00060,00065) vs reservoir (62614)
   const regularGauges = GAUGE_CONFIG.filter(g => !g.isReservoir);
   const reservoirGauges = GAUGE_CONFIG.filter(g => g.isReservoir);
 
   const regularIds = regularGauges.map(g => g.id).join(",");
   const regularUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${regularIds}&parameterCd=00060,00065&period=P3D`;
 
-  // Fetch regular and reservoir gauges in parallel
   const fetches: Promise<Response>[] = [fetchWithUA(regularUrl)];
   for (const rg of reservoirGauges) {
     const rUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${rg.id}&parameterCd=${rg.parameterCd}&period=P3D`;
@@ -207,7 +202,6 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
 
   const responses = await Promise.all(fetches);
 
-  // Parse regular gauges
   const regularRes = responses[0];
   if (!regularRes.ok) throw new Error(`USGS API returned ${regularRes.status}`);
   const regularData = await regularRes.json();
@@ -231,7 +225,6 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     if (paramCode === "00060") gaugeMap[siteCode].flowTS = values;
   }
 
-  // Parse reservoir gauges
   for (let i = 0; i < reservoirGauges.length; i++) {
     const rg = reservoirGauges[i];
     const rRes = responses[i + 1];
@@ -355,7 +348,12 @@ async function fetchForecast(): Promise<ForecastData> {
   const rvaText = rvaRes.ok ? await rvaRes.text() : "";
 
   const cleanAfd = afdText.replace(/<[^>]*>/g, "").trim();
-  const cleanRva = rvaText.replace(/<[^>]*>/g, "").trim();
+  // FIX: Remove script tags and their content BEFORE stripping other HTML tags
+  const cleanRva = rvaText
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]*>/g, "")
+    .trim();
 
   const parsed = parseAFD(cleanAfd);
 
@@ -382,7 +380,6 @@ function computeFrostData(forecastPeriods: WeatherData["forecast"]): FrostData {
   for (const p of forecastPeriods) {
     if (p.temp === null) continue;
     if (p.temp < 32) {
-      // Each forecast period is ~12 hours for the 7-day forecast
       const degBelow = 32 - p.temp;
       const estimatedHours = 12;
       cumulativeFDH += degBelow * estimatedHours;
@@ -414,8 +411,6 @@ async function fetchQPF(): Promise<QPFData | null> {
         if (probPrecip !== null && probPrecip > 30) {
           const periodStart = new Date(p.startTime).getTime();
           const hoursUntil = Math.max(0, Math.round((periodStart - now) / 3600000));
-
-          // Try to extract quantitative precip
           const qpfMatch = p.shortForecast?.match(/(\d+\.?\d*)\s*in/i);
           const amount = qpfMatch ? `${qpfMatch[1]} in` : `${probPrecip}% chance`;
 
@@ -474,7 +469,6 @@ async function fetchWeather(): Promise<WeatherData> {
 
   const frostData = computeFrostData(forecast);
 
-  // Derive QPF from 7-day if hourly failed
   let qpfResult = qpf;
   if (!qpfResult) {
     const precipPeriod = forecast.find(p =>
@@ -498,38 +492,31 @@ function parseEnsembleBounds(html: string): EnsembleBounds {
   const bounds: EnsembleBounds = {};
 
   for (const [nwsId, usgsId] of Object.entries(NWS_TO_USGS)) {
-    // Look for rows with this station ID in the HTML table
-    // Pattern: station ID followed by numbers in table cells
-    const pattern = new RegExp(`${nwsId}[\\s\\S]*?(?:<td[^>]*>|\\s+)(\\d+\\.?\\d*)(?:<\\/td>|\\s+)`, 'gi');
-    const numbers: number[] = [];
-
-    // More robust: find the line with station ID and extract all numbers after it
     const linePattern = new RegExp(`${nwsId}[^\\n]*`, 'gi');
     const lineMatch = html.match(linePattern);
     if (lineMatch) {
+      const numbers: number[] = [];
       for (const line of lineMatch) {
         const numMatches = line.match(/(\d+\.?\d*)/g);
         if (numMatches) {
           for (const n of numMatches) {
             const val = parseFloat(n);
-            if (val > 0 && val < 100) numbers.push(val); // reasonable stage values
+            if (val > 0 && val < 100) numbers.push(val);
           }
         }
       }
-    }
 
-    if (numbers.length >= 3) {
-      // Sort descending — p10 is highest (10% chance of exceeding), p90 is lowest
-      numbers.sort((a, b) => b - a);
-      bounds[usgsId] = {
-        p10: numbers[0],
-        p50: numbers[Math.floor(numbers.length / 2)],
-        p90: numbers[numbers.length - 1],
-      };
+      if (numbers.length >= 3) {
+        numbers.sort((a, b) => b - a);
+        bounds[usgsId] = {
+          p10: numbers[0],
+          p50: numbers[Math.floor(numbers.length / 2)],
+          p90: numbers[numbers.length - 1],
+        };
+      }
     }
   }
 
-  // Fallback hardcoded values from spec if parsing fails
   if (Object.keys(bounds).length === 0) {
     bounds["01503000"] = { p10: 9.4, p50: 6.3, p90: 3.5 };
     bounds["01513500"] = { p10: 14.0, p50: 8.9, p90: 4.6 };
@@ -580,7 +567,6 @@ async function fetchNews(): Promise<NewsData> {
         const props = f.properties;
         if (!props) continue;
 
-        // Filter for BGM office and flood-related
         const office = props.senderName || "";
         const event = (props.event || "").toLowerCase();
         const isBGM = office.includes("Binghamton") || office.includes("BGM");
@@ -608,6 +594,192 @@ async function fetchNews(): Promise<NewsData> {
   return { alerts, curatedReports: CURATED_REPORTS };
 }
 
+// --- V3 New Fetch Functions ---
+
+async function fetchGroundwater() {
+  const res = await fetchWithUA("https://waterservices.usgs.gov/nwis/iv/?format=json&sites=421556075281602&parameterCd=72019&period=P7D");
+  if (!res.ok) throw new Error(`USGS GW returned ${res.status}`);
+  const data = await res.json();
+  const ts = data?.value?.timeSeries?.[0];
+  const values: TimeSeriesPoint[] = (ts?.values?.[0]?.value || []).map((v: any) => ({
+    timestamp: v.dateTime,
+    value: v.value !== null && v.value !== "" && v.value !== "-999999" ? parseFloat(v.value) : null,
+  }));
+  const last = values.filter(p => p.value !== null).slice(-1)[0];
+  const depth = last?.value ?? null;
+  const trend = computeTrend(values);
+
+  let interpretation = "Unknown";
+  if (depth !== null) {
+    if (depth > 10) interpretation = "Deep — High Infiltration Capacity";
+    else if (depth > 5) interpretation = "Moderate — Some Capacity";
+    else if (depth > 2) interpretation = "Shallow — Limited Capacity";
+    else interpretation = "Near Surface — Basin Saturated";
+  }
+
+  return { depth, trend, timeSeries: values.slice(-168), interpretation, lastUpdated: last?.timestamp || null };
+}
+
+async function fetchSurfaceObs() {
+  const res = await fetchWithUA("https://api.weather.gov/stations/KBGM/observations/latest");
+  if (!res.ok) throw new Error(`KBGM obs returned ${res.status}`);
+  const data = await res.json();
+  const p = data?.properties;
+
+  const tempC = p?.temperature?.value;
+  const dewC = p?.dewpoint?.value;
+  const tempF = cToF(tempC);
+  const dewF = cToF(dewC);
+  const depression = (tempF !== null && dewF !== null) ? Math.round((tempF - dewF) * 10) / 10 : null;
+  const windKmh = p?.windSpeed?.value;
+  const gustKmh = p?.windGust?.value;
+  const visM = p?.visibility?.value;
+
+  return {
+    temperature: tempF,
+    dewpoint: dewF,
+    dewpointDepression: depression,
+    relativeHumidity: p?.relativeHumidity?.value !== null ? Math.round(p.relativeHumidity.value) : null,
+    windDirection: p?.windDirection?.value ?? null,
+    windDirectionCardinal: p?.windDirection?.value !== null ? degreesToCardinal(p.windDirection.value) : null,
+    windSpeed: windKmh !== null ? Math.round(windKmh * 0.621371) : null,
+    windGust: gustKmh !== null ? Math.round(gustKmh * 0.621371) : null,
+    textDescription: p?.textDescription || null,
+    visibility: visM !== null ? Math.round(visM * 0.000621371 * 10) / 10 : null,
+    isRaining: /rain|drizzle|shower|thunderstorm/i.test(p?.textDescription || ""),
+    isSnowing: /snow|sleet|ice pellet|freezing/i.test(p?.textDescription || ""),
+    timestamp: p?.timestamp || new Date().toISOString(),
+  };
+}
+
+function parseGridpointTimeline(rawValues: any[], convertFn?: (v: number) => number): Array<{ time: string; value: number }> {
+  if (!rawValues) return [];
+  const result: Array<{ time: string; value: number }> = [];
+  for (const entry of rawValues) {
+    if (entry.value === null || entry.value === undefined) continue;
+    const timeStr = entry.validTime?.split("/")?.[0];
+    if (!timeStr) continue;
+    const val = convertFn ? convertFn(entry.value) : entry.value;
+    result.push({ time: timeStr, value: Math.round(val * 100) / 100 });
+  }
+  return result.slice(0, 48);
+}
+
+async function fetchGridpointData() {
+  const res = await fetchWithUA("https://api.weather.gov/gridpoints/BGM/66,57");
+  if (!res.ok) throw new Error(`NWS gridpoint returned ${res.status}`);
+  const data = await res.json();
+  const p = data?.properties;
+
+  const tempTimeline = parseGridpointTimeline(p?.temperature?.values, (c) => c * 9 / 5 + 32);
+  const dewTimeline = parseGridpointTimeline(p?.dewpoint?.values, (c) => c * 9 / 5 + 32);
+  const qpfTimeline = parseGridpointTimeline(p?.quantitativePrecipitation?.values, (mm) => mm / 25.4);
+  const snowTimeline = parseGridpointTimeline(p?.snowfallAmount?.values, (mm) => mm / 25.4);
+  const windDirRaw = p?.windDirection?.values || [];
+  const windSpdRaw = p?.windSpeed?.values || [];
+
+  const windTimeline: Array<{ time: string; direction: number; speed: number }> = [];
+  for (let i = 0; i < Math.min(windDirRaw.length, windSpdRaw.length, 48); i++) {
+    const dir = windDirRaw[i];
+    const spd = windSpdRaw[i];
+    if (dir?.value !== null && spd?.value !== null) {
+      windTimeline.push({
+        time: dir.validTime?.split("/")?.[0] || "",
+        direction: dir.value,
+        speed: Math.round(spd.value * 0.621371),
+      });
+    }
+  }
+
+  // Find rain/snow transition: first hour temp crosses 32°F
+  let rainSnowTransition: { time: string; hoursUntil: number } | null = null;
+  const now = Date.now();
+  for (let i = 1; i < tempTimeline.length; i++) {
+    const prev = tempTimeline[i - 1].value;
+    const curr = tempTimeline[i].value;
+    if ((prev > 32 && curr <= 32) || (prev <= 32 && curr > 32)) {
+      const transTime = new Date(tempTimeline[i].time).getTime();
+      rainSnowTransition = {
+        time: tempTimeline[i].time,
+        hoursUntil: Math.round((transTime - now) / 3600000),
+      };
+      break;
+    }
+  }
+
+  return { temperatureTimeline: tempTimeline, dewpointTimeline: dewTimeline, qpfTimeline, snowTimeline, windTimeline, rainSnowTransition };
+}
+
+async function fetchHistoricalStats() {
+  const sites = "01503000,01513500,01512500,01515000,01502632";
+  const res = await fetchWithUA(`https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites=${sites}&statReportType=daily&statTypeCd=all&parameterCd=00060`);
+  if (!res.ok) throw new Error(`USGS stats returned ${res.status}`);
+  const text = await res.text();
+
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+
+  const result: Record<string, any> = {};
+  const lines = text.split("\n");
+
+  for (const line of lines) {
+    if (line.startsWith("#") || line.startsWith("5s") || line.startsWith("agency")) continue;
+    const parts = line.split("\t");
+    if (parts.length < 23) continue;
+
+    const siteNo = parts[1]?.trim();
+    const monthNu = parseInt(parts[5]?.trim());
+    const dayNu = parseInt(parts[6]?.trim());
+
+    if (monthNu === month && dayNu === day) {
+      result[siteNo] = {
+        beginYear: parseInt(parts[7]) || null,
+        endYear: parseInt(parts[8]) || null,
+        count: parseInt(parts[9]) || null,
+        maxYear: parseInt(parts[10]) || null,
+        max: parseFloat(parts[11]) || null,
+        minYear: parseInt(parts[12]) || null,
+        min: parseFloat(parts[13]) || null,
+        mean: parseFloat(parts[14]) || null,
+        p05: parseFloat(parts[15]) || null,
+        p10: parseFloat(parts[16]) || null,
+        p20: parseFloat(parts[17]) || null,
+        p25: parseFloat(parts[18]) || null,
+        p50: parseFloat(parts[19]) || null,
+        p75: parseFloat(parts[20]) || null,
+        p80: parseFloat(parts[21]) || null,
+        p90: parseFloat(parts[22]) || null,
+        p95: parts[23] ? parseFloat(parts[23]) : null,
+      };
+    }
+  }
+
+  return { date: `${now.toLocaleString("en", { month: "short" })} ${day}`, stats: result };
+}
+
+async function fetchSoilMoisture() {
+  try {
+    const result = execSync("python3 server/extract-soil-moisture.py", {
+      timeout: 30000,
+      cwd: process.cwd(),
+    });
+    const data = JSON.parse(result.toString().trim());
+    const pct = data.percentile;
+    let interpretation = "Unknown";
+    if (pct !== null) {
+      if (pct > 90) interpretation = "Very Wet — Basin Saturated";
+      else if (pct > 70) interpretation = "Above Normal — Primed for Runoff";
+      else if (pct > 30) interpretation = "Near Normal";
+      else if (pct > 10) interpretation = "Below Normal — Absorptive";
+      else interpretation = "Very Dry";
+    }
+    return { percentile: pct, date: data.date, interpretation, error: data.error || null };
+  } catch (err: any) {
+    return { percentile: null, date: null, interpretation: "Unavailable", error: err.message };
+  }
+}
+
 // --- Route Registration ---
 
 export async function registerRoutes(
@@ -615,107 +787,82 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
-  // Health check
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Gauges (now returns GaugesResponse with confluenceSync and basinTrend)
-  app.get("/api/gauges", async (_req, res) => {
-    try {
-      const cached = getCached<GaugesResponse>("gauges");
-      if (cached && !cached.stale) {
-        return res.json(cached.data);
+  // Helper for standard cached route
+  function cachedRoute<T>(path: string, cacheKey: string, fetcher: () => Promise<T>, ttl = CACHE_TTL) {
+    app.get(path, async (_req, res) => {
+      try {
+        const cached = getCached<T>(cacheKey, ttl);
+        if (cached && !cached.stale) return res.json(cached.data);
+        const data = await fetcher();
+        setCache(cacheKey, data);
+        return res.json(data);
+      } catch (err: any) {
+        const cached = getCached<T>(cacheKey, ttl);
+        if (cached) return res.json({ ...cached.data as any, stale: true, error: err.message });
+        return res.status(500).json({ error: err.message });
       }
+    });
+  }
 
-      const data = await fetchGaugeData();
-      setCache("gauges", data);
-      return res.json(data);
-    } catch (err: any) {
-      const cached = getCached<GaugesResponse>("gauges");
-      if (cached) {
-        return res.json({ ...cached.data, stale: true, error: err.message });
+  cachedRoute("/api/gauges", "gauges", fetchGaugeData);
+  cachedRoute("/api/forecast", "forecast", fetchForecast);
+  cachedRoute("/api/weather", "weather", fetchWeather);
+  cachedRoute("/api/ensemble", "ensemble", fetchEnsemble);
+  cachedRoute("/api/news", "news", fetchNews);
+  cachedRoute("/api/groundwater", "groundwater", fetchGroundwater);
+  cachedRoute("/api/surface-obs", "surface-obs", fetchSurfaceObs);
+  cachedRoute("/api/gridpoint-data", "gridpoint-data", fetchGridpointData, 10 * 60 * 1000);
+  cachedRoute("/api/historical-stats", "historical-stats", fetchHistoricalStats, LONG_CACHE_TTL);
+  cachedRoute("/api/soil-moisture", "soil-moisture", fetchSoilMoisture, LONG_CACHE_TTL);
+
+  // Image proxy endpoints
+  app.get("/api/radar-image", async (_req, res) => {
+    try {
+      const cached = getCached<Buffer>("radar-img", IMAGE_CACHE_TTL);
+      if (cached && !cached.stale) {
+        res.set("Content-Type", "image/png");
+        return res.send(cached.data);
       }
+      const imgRes = await fetch(
+        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q-900913&SRS=EPSG:4326&BBOX=41.3,-76.8,42.8,-74.8&WIDTH=600&HEIGHT=400&FORMAT=image/png&TRANSPARENT=TRUE"
+      );
+      if (!imgRes.ok) throw new Error(`Radar returned ${imgRes.status}`);
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      setCache("radar-img", buf);
+      res.set("Content-Type", "image/png");
+      return res.send(buf);
+    } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
   });
 
-  // Forecast (AFD + RVA)
-  app.get("/api/forecast", async (_req, res) => {
+  app.get("/api/spc-images/:type", async (req, res) => {
+    const type = req.params.type;
+    const urls: Record<string, string> = {
+      pwat: "https://www.spc.noaa.gov/exper/mesoanalysis/s14/pwtr/pwtr.gif",
+      "850mb": "https://www.spc.noaa.gov/exper/mesoanalysis/s14/850mb/850mb.gif",
+    };
+    const url = urls[type];
+    if (!url) return res.status(404).json({ error: "Invalid type" });
+
     try {
-      const cached = getCached<ForecastData>("forecast");
+      const cacheKey = `spc-${type}`;
+      const cached = getCached<Buffer>(cacheKey, SPC_CACHE_TTL);
       if (cached && !cached.stale) {
-        return res.json(cached.data);
+        res.set("Content-Type", "image/gif");
+        return res.send(cached.data);
       }
-
-      const data = await fetchForecast();
-      setCache("forecast", data);
-      return res.json(data);
+      const imgRes = await fetch(url);
+      if (!imgRes.ok) throw new Error(`SPC returned ${imgRes.status}`);
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      setCache(cacheKey, buf);
+      res.set("Content-Type", "image/gif");
+      return res.send(buf);
     } catch (err: any) {
-      const cached = getCached<ForecastData>("forecast");
-      if (cached) {
-        return res.json({ ...cached.data, stale: true, error: err.message });
-      }
-      return res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Weather (now includes frostData and qpf)
-  app.get("/api/weather", async (_req, res) => {
-    try {
-      const cached = getCached<WeatherData>("weather");
-      if (cached && !cached.stale) {
-        return res.json(cached.data);
-      }
-
-      const data = await fetchWeather();
-      setCache("weather", data);
-      return res.json(data);
-    } catch (err: any) {
-      const cached = getCached<WeatherData>("weather");
-      if (cached) {
-        return res.json({ ...cached.data, stale: true, error: err.message });
-      }
-      return res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Ensemble (now includes parsed ensembleBounds)
-  app.get("/api/ensemble", async (_req, res) => {
-    try {
-      const cached = getCached<EnsembleData>("ensemble");
-      if (cached && !cached.stale) {
-        return res.json(cached.data);
-      }
-
-      const data = await fetchEnsemble();
-      setCache("ensemble", data);
-      return res.json(data);
-    } catch (err: any) {
-      const cached = getCached<EnsembleData>("ensemble");
-      if (cached) {
-        return res.json({ ...cached.data, stale: true, error: err.message });
-      }
-      return res.status(500).json({ error: err.message });
-    }
-  });
-
-  // News & Alerts
-  app.get("/api/news", async (_req, res) => {
-    try {
-      const cached = getCached<NewsData>("news");
-      if (cached && !cached.stale) {
-        return res.json(cached.data);
-      }
-
-      const data = await fetchNews();
-      setCache("news", data);
-      return res.json(data);
-    } catch (err: any) {
-      const cached = getCached<NewsData>("news");
-      if (cached) {
-        return res.json({ ...cached.data, stale: true, error: err.message });
-      }
       return res.status(500).json({ error: err.message });
     }
   });

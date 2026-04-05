@@ -146,3 +146,94 @@ export type EnsembleBounds = z.infer<typeof ensembleBoundsSchema>;
 export type EnsembleData = z.infer<typeof ensembleDataSchema>;
 export type NewsItem = z.infer<typeof newsItemSchema>;
 export type NewsData = z.infer<typeof newsDataSchema>;
+
+// V3: Groundwater
+export const groundwaterDataSchema = z.object({
+  depth: z.number().nullable(),
+  trend: z.enum(["Rising", "Falling", "Steady", "Unknown"]),
+  timeSeries: z.array(timeSeriesPointSchema),
+  interpretation: z.string(),
+  lastUpdated: z.string().nullable(),
+});
+
+// V3: Surface Observations (KBGM expanded)
+export const surfaceObsSchema = z.object({
+  temperature: z.number().nullable(),
+  dewpoint: z.number().nullable(),
+  dewpointDepression: z.number().nullable(),
+  relativeHumidity: z.number().nullable(),
+  windDirection: z.number().nullable(),
+  windDirectionCardinal: z.string().nullable(),
+  windSpeed: z.number().nullable(),
+  windGust: z.number().nullable(),
+  textDescription: z.string().nullable(),
+  visibility: z.number().nullable(),
+  isRaining: z.boolean(),
+  isSnowing: z.boolean(),
+  timestamp: z.string(),
+});
+
+// V3: Gridpoint Forecast Data
+export const gridpointTimelinePointSchema = z.object({
+  time: z.string(),
+  value: z.number(),
+});
+
+export const windTimelinePointSchema = z.object({
+  time: z.string(),
+  direction: z.number(),
+  speed: z.number(),
+});
+
+export const gridpointDataSchema = z.object({
+  temperatureTimeline: z.array(gridpointTimelinePointSchema),
+  dewpointTimeline: z.array(gridpointTimelinePointSchema),
+  qpfTimeline: z.array(gridpointTimelinePointSchema),
+  snowTimeline: z.array(gridpointTimelinePointSchema),
+  windTimeline: z.array(windTimelinePointSchema),
+  rainSnowTransition: z.object({
+    time: z.string(),
+    hoursUntil: z.number(),
+  }).nullable(),
+});
+
+// V3: Historical Stats
+export const historicalStatEntrySchema = z.object({
+  beginYear: z.number().nullable(),
+  endYear: z.number().nullable(),
+  count: z.number().nullable(),
+  max: z.number().nullable(),
+  maxYear: z.number().nullable(),
+  min: z.number().nullable(),
+  minYear: z.number().nullable(),
+  mean: z.number().nullable(),
+  p05: z.number().nullable(),
+  p10: z.number().nullable(),
+  p20: z.number().nullable(),
+  p25: z.number().nullable(),
+  p50: z.number().nullable(),
+  p75: z.number().nullable(),
+  p80: z.number().nullable(),
+  p90: z.number().nullable(),
+  p95: z.number().nullable(),
+});
+
+export const historicalStatsSchema = z.object({
+  date: z.string(),
+  stats: z.record(z.string(), historicalStatEntrySchema),
+});
+
+// V3: Soil Moisture
+export const soilMoistureSchema = z.object({
+  percentile: z.number().nullable(),
+  date: z.string().nullable(),
+  interpretation: z.string(),
+  error: z.string().nullable(),
+});
+
+export type GroundwaterData = z.infer<typeof groundwaterDataSchema>;
+export type SurfaceObs = z.infer<typeof surfaceObsSchema>;
+export type GridpointData = z.infer<typeof gridpointDataSchema>;
+export type HistoricalStatEntry = z.infer<typeof historicalStatEntrySchema>;
+export type HistoricalStats = z.infer<typeof historicalStatsSchema>;
+export type SoilMoisture = z.infer<typeof soilMoistureSchema>;

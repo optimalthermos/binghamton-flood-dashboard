@@ -41,23 +41,56 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
+  // V3 new queries
+  const groundwater = useQuery<any>({
+    queryKey: ["/api/groundwater"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
+  const surfaceObs = useQuery<any>({
+    queryKey: ["/api/surface-obs"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
+  const gridpointData = useQuery<any>({
+    queryKey: ["/api/gridpoint-data"],
+    staleTime: 600000, // 10 min
+    refetchInterval: false,
+  });
+
+  const historicalStats = useQuery<any>({
+    queryKey: ["/api/historical-stats"],
+    staleTime: 86400000, // 24 hours
+    refetchInterval: false,
+  });
+
+  const soilMoisture = useQuery<any>({
+    queryKey: ["/api/soil-moisture"],
+    staleTime: 86400000,
+    refetchInterval: false,
+  });
+
   const refreshAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/gauges"] });
     queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
     queryClient.invalidateQueries({ queryKey: ["/api/weather"] });
     queryClient.invalidateQueries({ queryKey: ["/api/ensemble"] });
     queryClient.invalidateQueries({ queryKey: ["/api/news"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/groundwater"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/surface-obs"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/gridpoint-data"] });
+    // Don't refresh daily caches on every cycle
     setLastRefresh(new Date());
     setCountdown(REFRESH_INTERVAL / 1000);
   }, [queryClient]);
 
-  // Auto-refresh timer
   useEffect(() => {
     timerRef.current = setInterval(refreshAll, REFRESH_INTERVAL);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [refreshAll]);
 
-  // Countdown timer
   useEffect(() => {
     countdownRef.current = setInterval(() => {
       setCountdown(c => Math.max(0, c - 1));
@@ -67,8 +100,6 @@ export function useDashboardData() {
 
   const isAnyLoading = gauges.isLoading || forecast.isLoading || weather.isLoading;
   const isAnyError = gauges.isError || forecast.isError || weather.isError;
-
-  // Check if data is stale (>10 min old)
   const isDataStale = Date.now() - lastRefresh.getTime() > 10 * 60 * 1000;
 
   const connectionStatus: "live" | "stale" | "offline" =
@@ -80,6 +111,11 @@ export function useDashboardData() {
     weather,
     ensemble,
     news,
+    groundwater,
+    surfaceObs,
+    gridpointData,
+    historicalStats,
+    soilMoisture,
     refreshAll,
     countdown,
     lastRefresh,
