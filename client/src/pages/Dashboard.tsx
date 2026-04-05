@@ -1849,18 +1849,18 @@ export default function Dashboard() {
                 ))}
               </div>
 
+              {/* V6: Webcam Panel — BEFORE charts (visual context first) */}
+              <WebcamPanel
+                webcamsData={webcams.data}
+                isLoading={webcams.isLoading}
+              />
+
               {/* Confluence Hydraulics */}
               <ConfluenceHydraulicsPanel gaugesResp={gaugesResp} />
 
               {/* Stage + Flow Charts */}
               {gaugeList.length > 0 && <StageChart gauges={gaugeList} ensembleBounds={ensembleBounds} />}
               {gaugeList.length > 0 && <FlowChart gauges={gaugeList} />}
-
-              {/* V5: Webcam Panel — between charts and reservoirs */}
-              <WebcamPanel
-                webcamsData={webcams.data}
-                isLoading={webcams.isLoading}
-              />
 
             </div>
 
@@ -1886,6 +1886,9 @@ export default function Dashboard() {
                 groundwater={groundwater.data as GroundwaterData | undefined}
                 soilMoisture={soilMoisture.data as SoilMoisture | undefined}
               />
+
+              {/* V6: Ham Radio — moved up: emergency comms belong near risk assessment */}
+              <HamRadioPanel />
 
               {/* Alerts & Reports */}
               <LocalReportsPanel newsData={news.data} />
@@ -1917,7 +1920,6 @@ export default function Dashboard() {
               {/* AFD + RVA + Data Sources (collapsible stack) */}
               <AFDPanel forecast={forecast.data} />
               <RiverSummaryPanel forecast={forecast.data} />
-              <HamRadioPanel />
               <DataSourceStatus
                 gauges={{ isError: gauges.isError }}
                 forecast={{ isError: forecast.isError }}

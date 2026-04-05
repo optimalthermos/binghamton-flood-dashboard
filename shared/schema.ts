@@ -273,9 +273,11 @@ export type PredictiveOutlook = z.infer<typeof predictiveOutlookSchema>;
 export const webcamSchema = z.object({
   id: z.string(),
   name: z.string(),
-  type: z.enum(["nws", "dot"]),
+  type: z.enum(["nws", "dot", "usgs", "mesonet"]),
+  category: z.enum(["river", "weather", "traffic"]).optional(),
   imageUrl: z.string(),
   refreshInterval: z.number(),
+  description: z.string().optional(),
 });
 
 export const communityPostSchema = z.object({

@@ -1075,7 +1075,21 @@ const DOT_CAMERAS = [
   { id: "R9_005", name: "I-81 at Exit 4", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_005/playlist.m3u8", lat: 42.1145, lon: -75.8988 },
   { id: "R9_008", name: "I-81 NB at Windy Hill Rd", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R9_008/playlist.m3u8", lat: 42.1101, lon: -75.8641 },
   { id: "R9_006", name: "NY 17 East of Airport Rd", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_006/playlist.m3u8", lat: 42.1198, lon: -75.9442 },
+  { id: "R9_002", name: "NY 17 Approaching I-81", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_002/playlist.m3u8", lat: 42.1133, lon: -75.9250 },
+  { id: "R9_035", name: "NY 17 WB Exit 65 (Owego)", stream: "https://s9.nysdot.skyvdn.com:443/rtplive/R9_035/playlist.m3u8", lat: 42.1032, lon: -76.2618 },
+  { id: "R3_074", name: "I-81 south of Exit 9 (Marathon)", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R3_074/playlist.m3u8", lat: 42.4380, lon: -75.9870 },
+  { id: "R3_073", name: "I-81 north of Exit 9 (Marathon)", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R3_073/playlist.m3u8", lat: 42.4490, lon: -75.9840 },
 ];
+
+// USGS and Mesonet camera image cache (30 min TTL)
+const USGS_CAM_CACHE_TTL = 30 * 60 * 1000;
+const usgsCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
+const mesonetCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
+
+const USGS_CAM_URLS: Record<string, string> = {
+  oxford: "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Oxford/NY_Chenango_River_at_Oxford_newest.jpg",
+  sherburne: "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Sherburne/NY_Chenango_River_at_Sherburne_newest.jpg",
+};
 
 const DOT_CAM_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 const dotCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
@@ -1257,20 +1271,97 @@ export async function registerRoutes(
     }
   });
 
-  // V5: Webcam metadata
+  // V5: Webcam metadata (expanded with USGS river cams, Mesonet, and additional DOT cameras)
   cachedRoute("/api/webcams", "webcams-meta", async () => {
     const cameras = [
-      { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, imageUrl: "/api/webcams/nws", refreshInterval: 600 },
+      // River cameras (USGS — most valuable for flood monitoring)
+      { id: "usgs-oxford", name: "Chenango River at Oxford", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/oxford", refreshInterval: 3600, description: "USGS 01505010 — upstream Chenango, bridge view" },
+      { id: "usgs-sherburne", name: "Chenango River at Sherburne", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/sherburne", refreshInterval: 3600, description: "USGS 01505000 — upstream Chenango, river bend" },
+      // Weather cameras
+      { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, category: "weather" as const, imageUrl: "/api/webcams/nws", refreshInterval: 600, description: "South view from NWS BGM office" },
+      { id: "mesonet-bing", name: "NYS Mesonet Binghamton", type: "mesonet" as const, category: "weather" as const, imageUrl: "/api/webcams/mesonet/bing", refreshInterval: 3600, description: "Atmospheric conditions — Binghamton area" },
+      // Traffic cameras (NYSDOT)
       ...DOT_CAMERAS.map(c => ({
         id: c.id,
         name: c.name,
         type: "dot" as const,
+        category: "traffic" as const,
         imageUrl: `/api/webcams/dot/${c.id}`,
         refreshInterval: 120,
+        description: "NYSDOT traffic camera",
       })),
     ];
     return { cameras };
   }, 10 * 60 * 1000);
+
+  // V6: USGS river webcam proxy (direct S3 JPEG, cache 30 min)
+  app.get("/api/webcams/usgs/:location", async (req, res) => {
+    const location = req.params.location;
+    const sourceUrl = USGS_CAM_URLS[location];
+    if (!sourceUrl) return res.status(404).json({ error: "Unknown USGS camera location" });
+
+    const cached = usgsCamCache[location];
+    if (cached && Date.now() - cached.timestamp < USGS_CAM_CACHE_TTL) {
+      res.set("Content-Type", "image/jpeg");
+      return res.send(cached.buf);
+    }
+
+    try {
+      const imgRes = await fetch(sourceUrl, { headers: { "User-Agent": USER_AGENT } });
+      if (!imgRes.ok) throw new Error(`USGS camera returned ${imgRes.status}`);
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      usgsCamCache[location] = { buf, timestamp: Date.now() };
+      res.set("Content-Type", "image/jpeg");
+      return res.send(buf);
+    } catch (err: any) {
+      // Return stale cache if available
+      if (cached) {
+        res.set("Content-Type", "image/jpeg");
+        return res.send(cached.buf);
+      }
+      return res.status(502).json({ error: err.message });
+    }
+  });
+
+  // V6: Mesonet/Ventusky webcam proxy (hourly image, try current hour then fallback to previous)
+  app.get("/api/webcams/mesonet/:station", async (req, res) => {
+    const station = req.params.station;
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const hour = now.getUTCHours().toString().padStart(2, "0");
+    const prevHour = ((now.getUTCHours() - 1 + 24) % 24).toString().padStart(2, "0");
+    const cacheKey = `mesonet-${station}-${dateStr}${hour}`;
+
+    const cached = mesonetCamCache[cacheKey];
+    if (cached && Date.now() - cached.timestamp < USGS_CAM_CACHE_TTL) {
+      res.set("Content-Type", "image/jpeg");
+      return res.send(cached.buf);
+    }
+
+    const urls = [
+      `https://webcams.ventusky.com/data/91/332236991/hour/${dateStr}_${hour}00.jpg`,
+      `https://webcams.ventusky.com/data/91/332236991/hour/${dateStr}_${prevHour}00.jpg`,
+    ];
+
+    for (const url of urls) {
+      try {
+        const imgRes = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+        if (!imgRes.ok) continue;
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        mesonetCamCache[cacheKey] = { buf, timestamp: Date.now() };
+        res.set("Content-Type", "image/jpeg");
+        return res.send(buf);
+      } catch { /* try next URL */ }
+    }
+
+    // Return stale cache if available (any key for this station)
+    const staleKey = Object.keys(mesonetCamCache).find(k => k.startsWith(`mesonet-${station}-`));
+    if (staleKey) {
+      res.set("Content-Type", "image/jpeg");
+      return res.send(mesonetCamCache[staleKey].buf);
+    }
+    return res.status(502).json({ error: "Mesonet camera unavailable" });
+  });
 
   // V5: NWS webcam proxy
   app.get("/api/webcams/nws", async (_req, res) => {
