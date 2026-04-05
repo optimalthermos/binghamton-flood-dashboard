@@ -25,6 +25,43 @@ export const gaugeDataSchema = z.object({
   thresholds: gaugeThresholdsSchema,
   isBinghamton: z.boolean(),
   isOffline: z.boolean(),
+  isReservoir: z.boolean().optional(),
+  poolElevation: z.number().nullable().optional(),
+  conservationPool: z.number().optional(),
+  floodStoragePct: z.number().nullable().optional(),
+  recessionRate: z.number().nullable().optional(),
+  recessionPhase: z.enum(["FAST_RECESSION", "BASEFLOW", "LOADING"]).nullable().optional(),
+});
+
+export const confluenceSyncSchema = z.object({
+  state: z.enum(["BOTH_RISING", "BOTH_FALLING", "SUSQ_RISING_CHEN_FALLING", "CHEN_RISING_SUSQ_FALLING", "STABLE"]),
+  conklinTrend: z.string(),
+  chenangoTrend: z.string(),
+  riskLevel: z.enum(["HIGH", "MODERATE", "LOW"]),
+});
+
+export const basinTrendSchema = z.object({
+  direction: z.enum(["Loading", "Draining", "Stable"]),
+  weightedTrend: z.number(),
+  netDischarge: z.number(),
+});
+
+export const gaugesResponseSchema = z.object({
+  gauges: z.array(gaugeDataSchema),
+  confluenceSync: confluenceSyncSchema,
+  basinTrend: basinTrendSchema,
+});
+
+export const frostDataSchema = z.object({
+  cumulativeFDH: z.number(),
+  estimatedDepthInches: z.number(),
+  significance: z.enum(["NONE", "NUISANCE", "HYDROLOGIC"]),
+});
+
+export const qpfDataSchema = z.object({
+  amount: z.string(),
+  hoursUntil: z.number(),
+  description: z.string(),
 });
 
 export const forecastDataSchema = z.object({
@@ -59,13 +96,38 @@ export const weatherDataSchema = z.object({
     detailedForecast: z.string(),
     isDaytime: z.boolean(),
   })),
+  frostData: frostDataSchema.optional(),
+  qpf: qpfDataSchema.nullable().optional(),
   stale: z.boolean().optional(),
   error: z.string().optional(),
 });
 
+export const ensembleBoundsSchema = z.record(z.string(), z.object({
+  p10: z.number(),
+  p50: z.number(),
+  p90: z.number(),
+}));
+
 export const ensembleDataSchema = z.object({
   rawHtml: z.string(),
   timestamp: z.string(),
+  ensembleBounds: ensembleBoundsSchema.optional(),
+  stale: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
+export const newsItemSchema = z.object({
+  headline: z.string(),
+  source: z.string(),
+  date: z.string(),
+  url: z.string(),
+  severity: z.enum(["warning", "watch", "advisory", "info"]).optional(),
+  isNWSAlert: z.boolean().optional(),
+});
+
+export const newsDataSchema = z.object({
+  alerts: z.array(newsItemSchema),
+  curatedReports: z.array(newsItemSchema),
   stale: z.boolean().optional(),
   error: z.string().optional(),
 });
@@ -73,6 +135,14 @@ export const ensembleDataSchema = z.object({
 export type GaugeThresholds = z.infer<typeof gaugeThresholdsSchema>;
 export type TimeSeriesPoint = z.infer<typeof timeSeriesPointSchema>;
 export type GaugeData = z.infer<typeof gaugeDataSchema>;
+export type ConfluenceSync = z.infer<typeof confluenceSyncSchema>;
+export type BasinTrend = z.infer<typeof basinTrendSchema>;
+export type GaugesResponse = z.infer<typeof gaugesResponseSchema>;
+export type FrostData = z.infer<typeof frostDataSchema>;
+export type QPFData = z.infer<typeof qpfDataSchema>;
 export type ForecastData = z.infer<typeof forecastDataSchema>;
 export type WeatherData = z.infer<typeof weatherDataSchema>;
+export type EnsembleBounds = z.infer<typeof ensembleBoundsSchema>;
 export type EnsembleData = z.infer<typeof ensembleDataSchema>;
+export type NewsItem = z.infer<typeof newsItemSchema>;
+export type NewsData = z.infer<typeof newsDataSchema>;

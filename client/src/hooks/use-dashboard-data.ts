@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GaugeData, ForecastData, WeatherData, EnsembleData } from "@shared/schema";
+import type { GaugesResponse, ForecastData, WeatherData, EnsembleData, NewsData } from "@shared/schema";
 
 const REFRESH_INTERVAL = 300000; // 5 minutes
 
@@ -11,7 +11,7 @@ export function useDashboardData() {
   const timerRef = useRef<ReturnType<typeof setInterval>>();
   const countdownRef = useRef<ReturnType<typeof setInterval>>();
 
-  const gauges = useQuery<GaugeData[]>({
+  const gauges = useQuery<GaugesResponse>({
     queryKey: ["/api/gauges"],
     staleTime: REFRESH_INTERVAL,
     refetchInterval: false,
@@ -35,11 +35,18 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
+  const news = useQuery<NewsData>({
+    queryKey: ["/api/news"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
   const refreshAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/gauges"] });
     queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
     queryClient.invalidateQueries({ queryKey: ["/api/weather"] });
     queryClient.invalidateQueries({ queryKey: ["/api/ensemble"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/news"] });
     setLastRefresh(new Date());
     setCountdown(REFRESH_INTERVAL / 1000);
   }, [queryClient]);
@@ -72,6 +79,7 @@ export function useDashboardData() {
     forecast,
     weather,
     ensemble,
+    news,
     refreshAll,
     countdown,
     lastRefresh,
