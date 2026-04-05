@@ -780,6 +780,291 @@ async function fetchSoilMoisture() {
   }
 }
 
+// --- Predictive Outlook Engine ---
+
+const HISTORICAL_FLOODS = [
+  {
+    name: "Tropical Storm Lee (Sept 2011)",
+    description: "Remnants of Lee stalled over basin. 10-15\" rain over 3 days on already-saturated ground from Hurricane Irene 2 weeks prior.",
+    triggers: { qpf48: 8, soilMoisturePct: 95, gwDepth: 1, conklinStage: 15, allRising: true },
+    severity: "CATASTROPHIC",
+    conklinPeak: 22.26,
+    vestalPeak: 32.67,
+  },
+  {
+    name: "June 2006 Flood",
+    description: "Stalled frontal boundary with tropical moisture. 8-13\" over 3-4 days. Ground saturated from wet spring.",
+    triggers: { qpf48: 6, soilMoisturePct: 85, gwDepth: 2, conklinStage: 12, allRising: true },
+    severity: "MAJOR",
+    conklinPeak: 19.61,
+    vestalPeak: 28.13,
+  },
+  {
+    name: "Typical Spring Freshet",
+    description: "Snowmelt + moderate rain (2-3\") on saturated ground. Common in March-April.",
+    triggers: { qpf48: 2, soilMoisturePct: 70, gwDepth: 5, conklinStage: 10, allRising: false },
+    severity: "MINOR",
+    conklinPeak: 13.5,
+    vestalPeak: 20.0,
+  },
+  {
+    name: "Flash Event (Convective)",
+    description: "Localized 3-5\" thunderstorm over ungauged tributaries. Castle Creek / Thomas Creek response.",
+    triggers: { qpf48: 3, soilMoisturePct: 60, gwDepth: 8, conklinStage: 8, allRising: false },
+    severity: "MODERATE",
+    conklinPeak: 14.0,
+    vestalPeak: 21.0,
+  },
+];
+
+function scoreToRiskLevel(score: number): string {
+  if (score <= 25) return "LOW";
+  if (score <= 50) return "MODERATE";
+  if (score <= 70) return "ELEVATED";
+  return "HIGH";
+}
+
+async function fetchPredictiveOutlook() {
+  // Fetch all upstream data, degrading gracefully on failures
+  const [gaugeResult, gridpointResult, soilMoistureResult, groundwaterResult] = await Promise.allSettled([
+    fetchGaugeData(),
+    fetchGridpointData(),
+    fetchSoilMoisture(),
+    fetchGroundwater(),
+  ]);
+
+  const gaugeData = gaugeResult.status === "fulfilled" ? gaugeResult.value : null;
+  const gridpoint = gridpointResult.status === "fulfilled" ? gridpointResult.value : null;
+  const soilMoisture = soilMoistureResult.status === "fulfilled" ? soilMoistureResult.value : null;
+  const groundwater = groundwaterResult.status === "fulfilled" ? groundwaterResult.value : null;
+
+  const gauges = gaugeData?.gauges || [];
+  const regularGauges = gauges.filter(g => !g.isReservoir && !g.isOffline);
+  const confluenceSync = gaugeData?.confluenceSync;
+  const basinTrend = gaugeData?.basinTrend;
+
+  // === FACTOR 1: Stage Proximity (weight 0.25) ===
+  const conklin = gauges.find(g => g.id === "01503000");
+  const conklinActionStage = 10;
+  let stageScore = 0;
+  let stageDetail = "No gauge data";
+  if (conklin?.stage !== null && conklin?.stage !== undefined) {
+    stageScore = Math.min(100, (conklin.stage / conklinActionStage) * 100);
+    stageDetail = `Conklin at ${Math.round(stageScore)}% of action stage (${conklin.stage.toFixed(2)}ft / ${conklinActionStage}ft)`;
+  }
+
+  // === FACTOR 2: Basin Trend (weight 0.15) ===
+  let basinScore = 30;
+  let basinDetail = "Stable";
+  const btDirection = basinTrend?.direction || "Stable";
+  const weightedTrendMag = Math.abs(basinTrend?.weightedTrend || 0);
+  if (btDirection === "Loading") {
+    basinScore = Math.min(100, 80 * (1 + weightedTrendMag));
+    basinDetail = `Basin loading (weighted trend: ${basinTrend?.weightedTrend?.toFixed(3)})`;
+  } else if (btDirection === "Draining") {
+    basinScore = Math.max(0, 10 * (1 - weightedTrendMag));
+    basinDetail = `Basin draining (weighted trend: ${basinTrend?.weightedTrend?.toFixed(3)})`;
+  } else {
+    basinScore = 30;
+    basinDetail = "Basin stable";
+  }
+
+  // === FACTOR 3: QPF Next 48h (weight 0.20) ===
+  let qpfScore = 0;
+  let qpfDetail = "No QPF data";
+  let qpf48Total = 0;
+  if (gridpoint?.qpfTimeline) {
+    const now = Date.now();
+    const cutoff48h = now + 48 * 3600 * 1000;
+    qpf48Total = gridpoint.qpfTimeline
+      .filter(p => new Date(p.time).getTime() <= cutoff48h)
+      .reduce((sum, p) => sum + p.value, 0);
+    if (qpf48Total <= 0) qpfScore = 0;
+    else if (qpf48Total <= 0.5) qpfScore = 30;
+    else if (qpf48Total <= 1) qpfScore = 50;
+    else if (qpf48Total <= 2) qpfScore = 75;
+    else qpfScore = Math.min(100, 75 + (qpf48Total - 2) * 12.5);
+    qpfDetail = `${qpf48Total.toFixed(2)}" QPF in next 48h`;
+  }
+
+  // === FACTOR 4: Soil Moisture (weight 0.10) ===
+  let soilScore = 50;
+  let soilDetail = "Unknown";
+  const soilPct = soilMoisture?.percentile ?? null;
+  if (soilPct !== null) {
+    soilScore = soilPct;
+    soilDetail = `${soilPct.toFixed(0)}th percentile — ${soilMoisture?.interpretation || ""}`;
+  }
+
+  // === FACTOR 5: Groundwater Saturation (weight 0.10) ===
+  let gwScore = 40;
+  let gwDetail = "Unknown";
+  const gwDepth = groundwater?.depth ?? null;
+  if (gwDepth !== null) {
+    if (gwDepth < 2) gwScore = 100;
+    else if (gwDepth < 5) gwScore = 70;
+    else if (gwDepth < 10) gwScore = 40;
+    else gwScore = 10;
+    gwDetail = `Groundwater at ${gwDepth.toFixed(2)}ft depth — ${groundwater?.interpretation || ""}`;
+  }
+
+  // === FACTOR 6: Confluence Sync (weight 0.10) ===
+  let confluenceScore = 20;
+  let confluenceDetail = "Stable";
+  const csState = confluenceSync?.state || "STABLE";
+  if (csState === "BOTH_RISING") {
+    confluenceScore = 100;
+    confluenceDetail = "Both rivers rising — compound flood risk elevated";
+  } else if (csState === "SUSQ_RISING_CHEN_FALLING" || csState === "CHEN_RISING_SUSQ_FALLING") {
+    confluenceScore = 50;
+    confluenceDetail = `Asymmetric confluence — ${csState.replace(/_/g, " ").toLowerCase()}`;
+  } else if (csState === "BOTH_FALLING") {
+    confluenceScore = 10;
+    confluenceDetail = "Both rivers falling — basin draining";
+  } else {
+    confluenceScore = 20;
+    confluenceDetail = "Confluence stable";
+  }
+
+  // === FACTOR 7: Recession Phase (weight 0.10) ===
+  let recessionScore = 10;
+  let recessionDetail = "No loading gauges";
+  const loadingGauges = regularGauges.filter(g => g.recessionPhase === "LOADING");
+  if (loadingGauges.length === 0) {
+    recessionScore = 10;
+    recessionDetail = "All gauges in recession or baseflow";
+  } else if (loadingGauges.length === 1) {
+    recessionScore = 30;
+    recessionDetail = `1 gauge loading: ${loadingGauges.map(g => g.name).join(", ")}`;
+  } else if (loadingGauges.length === 2) {
+    recessionScore = 70;
+    recessionDetail = `2 gauges loading: ${loadingGauges.map(g => g.name).join(", ")}`;
+  } else {
+    recessionScore = 100;
+    recessionDetail = `${loadingGauges.length} gauges loading: ${loadingGauges.map(g => g.name).join(", ")}`;
+  }
+
+  // === COMPOSITE SCORE ===
+  const weights = [
+    { name: "Stage Proximity", score: stageScore, weight: 0.25, detail: stageDetail },
+    { name: "Basin Trend", score: basinScore, weight: 0.15, detail: basinDetail },
+    { name: "QPF (48h)", score: qpfScore, weight: 0.20, detail: qpfDetail },
+    { name: "Soil Moisture", score: soilScore, weight: 0.10, detail: soilDetail },
+    { name: "Groundwater", score: gwScore, weight: 0.10, detail: gwDetail },
+    { name: "Confluence Sync", score: confluenceScore, weight: 0.10, detail: confluenceDetail },
+    { name: "Recession Phase", score: recessionScore, weight: 0.10, detail: recessionDetail },
+  ];
+
+  const compositeScore = Math.round(
+    weights.reduce((sum, f) => sum + f.score * f.weight, 0)
+  );
+  const riskLevel = scoreToRiskLevel(compositeScore) as "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
+
+  const factors = weights
+    .map(f => ({
+      name: f.name,
+      score: Math.round(f.score),
+      weight: f.weight,
+      contribution: Math.round(f.score * f.weight * 10) / 10,
+      detail: f.detail,
+    }))
+    .sort((a, b) => b.contribution - a.contribution);
+
+  // === OUTLOOK (24h, 48h, 72h) ===
+  const qpf24Total = gridpoint?.qpfTimeline
+    ? gridpoint.qpfTimeline
+        .filter(p => new Date(p.time).getTime() <= Date.now() + 24 * 3600 * 1000)
+        .reduce((sum, p) => sum + p.value, 0)
+    : 0;
+  const qpf72Total = gridpoint?.qpfTimeline
+    ? gridpoint.qpfTimeline
+        .filter(p => new Date(p.time).getTime() <= Date.now() + 72 * 3600 * 1000)
+        .reduce((sum, p) => sum + p.value, 0)
+    : 0;
+
+  const calcScore = (qpf: number, recPhase: number) => {
+    let qScore = 0;
+    if (qpf <= 0) qScore = 0;
+    else if (qpf <= 0.5) qScore = 30;
+    else if (qpf <= 1) qScore = 50;
+    else if (qpf <= 2) qScore = 75;
+    else qScore = Math.min(100, 75 + (qpf - 2) * 12.5);
+    return Math.round(
+      stageScore * 0.25 +
+      basinScore * 0.15 +
+      qScore * 0.20 +
+      soilScore * 0.10 +
+      gwScore * 0.10 +
+      confluenceScore * 0.10 +
+      recPhase * 0.10
+    );
+  };
+
+  const score24 = calcScore(qpf24Total, recessionScore * 0.8);
+  const score48 = compositeScore;
+  const score72 = calcScore(qpf72Total, Math.max(10, recessionScore - 15));
+
+  // === HISTORICAL PATTERN MATCHING ===
+  function computeSimilarity(flood: typeof HISTORICAL_FLOODS[0]): number {
+    const dims: Array<{ current: number; target: number; maxRange: number }> = [
+      { current: qpf48Total, target: flood.triggers.qpf48, maxRange: 10 },
+      { current: soilPct ?? 50, target: flood.triggers.soilMoisturePct, maxRange: 100 },
+      { current: gwDepth ?? 8, target: flood.triggers.gwDepth, maxRange: 15 },
+      { current: conklin?.stage ?? 5, target: flood.triggers.conklinStage, maxRange: 20 },
+    ];
+    const allRisingMatch = flood.triggers.allRising === (csState === "BOTH_RISING") ? 0 : 1;
+    const normalizedDists = dims.map(d => Math.abs(d.current - d.target) / d.maxRange);
+    normalizedDists.push(allRisingMatch * 0.5);
+    const avgDist = normalizedDists.reduce((s, v) => s + v, 0) / normalizedDists.length;
+    return Math.round(Math.max(0, (1 - avgDist) * 100));
+  }
+
+  const historicalMatches = HISTORICAL_FLOODS
+    .map(f => ({
+      name: f.name,
+      similarity: computeSimilarity(f),
+      severity: f.severity,
+      description: f.description,
+      peakComparison: `Current Conklin ${conklin?.stage?.toFixed(2) ?? "?"}ft vs ${f.name.split(" ")[0] === "Tropical" ? "Lee" : f.name.split(" ")[0]} peak ${f.conklinPeak}ft`,
+    }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 3);
+
+  // === NARRATIVE ===
+  const primaryFactor = factors[0];
+  const topMatch = historicalMatches[0];
+  const matchPhrase = topMatch.similarity > 40
+    ? ` Current conditions show ${topMatch.similarity}% similarity to a ${topMatch.name.toLowerCase()} pattern.`
+    : ` Conditions do not strongly match any historical flood pattern (closest: ${topMatch.name}, ${topMatch.similarity}% similarity).`;
+
+  const escalateQPF = qpf48Total < 1.5 ? "QPF exceeds 1.5\"" : "QPF exceeds 3\"";
+  const escalateGW = gwDepth === null || gwDepth > 3 ? "groundwater table rises above 3ft" : "all gauges enter LOADING phase";
+  const escalationTrigger = `${escalateQPF} or ${escalateGW}`;
+  const deescalationTrigger = "All gauges enter FAST_RECESSION and QPF clears below 0.25\"";
+
+  const watchFor = conklin?.stage !== null && conklin?.stage !== undefined && conklin.stage < conklinActionStage
+    ? `Watch for: Conklin stage crossing ${conklinActionStage}ft action level (currently ${conklin.stage.toFixed(2)}ft).`
+    : `Watch for: Any gauge crossing minor flood stage.`;
+
+  const narrative = `Basin risk is ${riskLevel} (score ${compositeScore}/100), driven primarily by ${primaryFactor.name.toLowerCase()} (${primaryFactor.detail}).${matchPhrase} Risk would escalate to ${scoreToRiskLevel(compositeScore + 20)} if ${escalationTrigger}. De-escalation likely when ${deescalationTrigger}. ${watchFor}`;
+
+  return {
+    compositeScore,
+    riskLevel,
+    outlook24h: { score: score24, level: scoreToRiskLevel(score24) },
+    outlook48h: { score: score48, level: scoreToRiskLevel(score48) },
+    outlook72h: { score: score72, level: scoreToRiskLevel(score72) },
+    factors,
+    historicalMatches,
+    narrative,
+    triggers: {
+      escalation: escalationTrigger,
+      deescalation: deescalationTrigger,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 // --- Route Registration ---
 
 export async function registerRoutes(
@@ -818,6 +1103,7 @@ export async function registerRoutes(
   cachedRoute("/api/gridpoint-data", "gridpoint-data", fetchGridpointData, 10 * 60 * 1000);
   cachedRoute("/api/historical-stats", "historical-stats", fetchHistoricalStats, LONG_CACHE_TTL);
   cachedRoute("/api/soil-moisture", "soil-moisture", fetchSoilMoisture, LONG_CACHE_TTL);
+  cachedRoute("/api/predictive-outlook", "predictive-outlook", fetchPredictiveOutlook, 5 * 60 * 1000);
 
   // Image proxy endpoints
   app.get("/api/radar-image", async (_req, res) => {

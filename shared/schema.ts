@@ -237,3 +237,34 @@ export type GridpointData = z.infer<typeof gridpointDataSchema>;
 export type HistoricalStatEntry = z.infer<typeof historicalStatEntrySchema>;
 export type HistoricalStats = z.infer<typeof historicalStatsSchema>;
 export type SoilMoisture = z.infer<typeof soilMoistureSchema>;
+
+// V4: Predictive Outlook
+export const predictiveOutlookSchema = z.object({
+  compositeScore: z.number(),
+  riskLevel: z.enum(["LOW", "MODERATE", "ELEVATED", "HIGH"]),
+  outlook24h: z.object({ score: z.number(), level: z.string() }),
+  outlook48h: z.object({ score: z.number(), level: z.string() }),
+  outlook72h: z.object({ score: z.number(), level: z.string() }),
+  factors: z.array(z.object({
+    name: z.string(),
+    score: z.number(),
+    weight: z.number(),
+    contribution: z.number(),
+    detail: z.string(),
+  })),
+  historicalMatches: z.array(z.object({
+    name: z.string(),
+    similarity: z.number(),
+    severity: z.string(),
+    description: z.string(),
+    peakComparison: z.string(),
+  })),
+  narrative: z.string(),
+  triggers: z.object({
+    escalation: z.string(),
+    deescalation: z.string(),
+  }),
+  generatedAt: z.string(),
+});
+
+export type PredictiveOutlook = z.infer<typeof predictiveOutlookSchema>;

@@ -12,6 +12,7 @@ import {
   ExternalLink, AlertTriangle, CheckCircle, XCircle, Clock, WifiOff, Wifi,
   Droplets, ArrowDownUp, Newspaper, ShieldAlert, Gauge,
   Mountain, Wind, MapPin, Eye, BarChart3, Layers, Radio,
+  Brain, TrendingUp as TrendIcon, History, TriangleAlert, ArrowUp, ArrowDown,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ReferenceLine,
@@ -20,6 +21,7 @@ import {
 import type {
   GaugeData, WeatherData, GaugesResponse, EnsembleData, NewsData,
   GroundwaterData, SurfaceObs, GridpointData, HistoricalStats, HistoricalStatEntry, SoilMoisture,
+  PredictiveOutlook,
 } from "@shared/schema";
 
 // === Utility helpers ===
@@ -1367,6 +1369,331 @@ function RiverSummaryPanel({ forecast }: { forecast?: ForecastData }) {
   );
 }
 
+// === V4: Basin State Panel (consolidated GW + Soil + Atmos) ===
+function BasinStatePanel({ groundwater, soilMoisture, surfaceObs }: {
+  groundwater?: GroundwaterData; soilMoisture?: SoilMoisture; surfaceObs?: SurfaceObs;
+}) {
+  const gwDepth = groundwater?.depth ?? null;
+  const gwColor = gwDepth === null ? "text-muted-foreground" :
+    gwDepth < 2 ? "text-red-400" : gwDepth < 5 ? "text-orange-400" : gwDepth < 10 ? "text-amber-400" : "text-emerald-400";
+  const soilPct = soilMoisture?.percentile ?? null;
+  const soilColor = soilPct === null ? "text-muted-foreground" :
+    soilPct > 90 ? "text-red-400" : soilPct > 70 ? "text-orange-400" : soilPct > 30 ? "text-emerald-400" : "text-amber-400";
+
+  return (
+    <Card className="bg-card border-border">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Layers className="h-4 w-4" />
+          Basin State
+          {surfaceObs?.isRaining && <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30 border text-[10px]">RAIN</Badge>}
+          {surfaceObs?.isSnowing && <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 border text-[10px]">SNOW</Badge>}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          {/* Groundwater */}
+          <div className="bg-accent/50 rounded p-2">
+            <div className="text-muted-foreground flex items-center gap-1">
+              <Droplets className="h-3 w-3" /> GW Depth
+            </div>
+            <div className={`font-bold text-base ${gwColor}`}>
+              {gwDepth !== null ? `${gwDepth.toFixed(1)}ft` : "N/A"}
+            </div>
+            <div className="text-muted-foreground truncate">{groundwater?.interpretation || "—"}</div>
+          </div>
+          {/* Soil Moisture */}
+          <div className="bg-accent/50 rounded p-2">
+            <div className="text-muted-foreground flex items-center gap-1">
+              <Activity className="h-3 w-3" /> Soil Moisture
+            </div>
+            <div className={`font-bold text-base ${soilColor}`}>
+              {soilPct !== null ? `${soilPct.toFixed(0)}th pct` : "N/A"}
+            </div>
+            <div className="text-muted-foreground truncate">{soilMoisture?.interpretation || "—"}</div>
+          </div>
+          {/* Dewpoint Depression */}
+          <div className="bg-accent/50 rounded p-2">
+            <div className="text-muted-foreground">Dew Depression</div>
+            <div className={`font-bold text-base ${surfaceObs?.dewpointDepression !== null && (surfaceObs?.dewpointDepression || 99) < 5 ? "text-amber-400" : ""}` }>
+              {surfaceObs?.dewpointDepression !== null && surfaceObs?.dewpointDepression !== undefined ? `${surfaceObs.dewpointDepression}°F` : "N/A"}
+            </div>
+            <div className="text-muted-foreground">
+              Dew: {surfaceObs?.dewpoint !== null && surfaceObs?.dewpoint !== undefined ? `${surfaceObs.dewpoint}°F` : "N/A"}
+            </div>
+          </div>
+          {/* Wind */}
+          <div className="bg-accent/50 rounded p-2">
+            <div className="text-muted-foreground flex items-center gap-1">
+              <Wind className="h-3 w-3" /> Wind
+            </div>
+            <div className="font-bold text-base">
+              {surfaceObs?.windSpeed !== null && surfaceObs?.windSpeed !== undefined ? `${surfaceObs.windSpeed} mph` : "Calm"}
+            </div>
+            <div className="text-muted-foreground">
+              {surfaceObs?.windDirectionCardinal || ""}{surfaceObs?.windGust ? ` · Gust ${surfaceObs.windGust}mph` : ""}
+            </div>
+          </div>
+          {/* Visibility */}
+          <div className="bg-accent/50 rounded p-2">
+            <div className="text-muted-foreground flex items-center gap-1">
+              <Eye className="h-3 w-3" /> Visibility
+            </div>
+            <div className="font-bold text-base">
+              {surfaceObs?.visibility !== null && surfaceObs?.visibility !== undefined ? `${surfaceObs.visibility} mi` : "N/A"}
+            </div>
+            <div className="text-muted-foreground">RH: {surfaceObs?.relativeHumidity !== null && surfaceObs?.relativeHumidity !== undefined ? `${surfaceObs.relativeHumidity}%` : "N/A"}</div>
+          </div>
+          {/* Conditions */}
+          <div className="bg-accent/50 rounded p-2">
+            <div className="text-muted-foreground">Conditions</div>
+            <div className="font-medium text-sm leading-tight">{surfaceObs?.textDescription || "N/A"}</div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// === V4: Combined Imagery Panel (Radar + PWAT + 850mb tabs) ===
+function ImageryPanel() {
+  const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => setRefreshKey(k => k + 1), 300000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <Card className="bg-card border-border">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Radio className="h-4 w-4" />
+            Radar + Upper Air
+          </CardTitle>
+          <div className="flex gap-1">
+            <Button variant={activeTab === "radar" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
+              onClick={() => setActiveTab("radar")}>Radar</Button>
+            <Button variant={activeTab === "pwat" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
+              onClick={() => setActiveTab("pwat")}>PWAT</Button>
+            <Button variant={activeTab === "850mb" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
+              onClick={() => setActiveTab("850mb")}>850mb</Button>
+            <Button variant="ghost" size="sm" className="h-6 px-1" onClick={() => setRefreshKey(k => k + 1)}>
+              <RefreshCw className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="relative bg-muted/30 rounded-lg overflow-hidden">
+          {activeTab === "radar" && (
+            <img
+              src={`/api/radar-image?_=${refreshKey}`}
+              alt="NEXRAD Radar — Southern Tier NY"
+              className="w-full h-auto"
+              style={{ minHeight: 180 }}
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+          )}
+          {(activeTab === "pwat" || activeTab === "850mb") && (
+            <img
+              src={`/api/spc-images/${activeTab}`}
+              alt={activeTab === "pwat" ? "Precipitable Water" : "850mb Analysis"}
+              className="w-full h-auto"
+              style={{ minHeight: 180 }}
+            />
+          )}
+        </div>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          {activeTab === "radar" ? "IEM NEXRAD | 41.3°N–42.8°N, 76.8°W–74.8°W" :
+           activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
+           "850mb Wind/Temperature — SPC Mesoanalysis Sector 14 (NE US)"}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// === V4: Predictive Outlook Panel ===
+function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook; isLoading?: boolean }) {
+  if (isLoading) {
+    return (
+      <Card className="bg-card border-border animate-pulse">
+        <CardContent className="p-4 h-64" />
+      </Card>
+    );
+  }
+
+  if (!data) {
+    return (
+      <Card className="bg-card border-border">
+        <CardContent className="p-4 flex items-center justify-center h-32 text-muted-foreground text-sm">
+          <Brain className="h-4 w-4 mr-2" /> Predictive analysis unavailable
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const riskColors: Record<string, { bg: string; border: string; text: string; bar: string }> = {
+    LOW:      { bg: "bg-emerald-500/10", border: "border-emerald-500/30", text: "text-emerald-400", bar: "bg-emerald-500" },
+    MODERATE: { bg: "bg-amber-500/10",   border: "border-amber-500/30",   text: "text-amber-400",   bar: "bg-amber-500"   },
+    ELEVATED: { bg: "bg-orange-500/10",  border: "border-orange-500/30",  text: "text-orange-400",  bar: "bg-orange-500"  },
+    HIGH:     { bg: "bg-red-500/10",      border: "border-red-500/30",     text: "text-red-400",     bar: "bg-red-500"     },
+  };
+
+  const sevColors: Record<string, string> = {
+    CATASTROPHIC: "text-red-400 bg-red-500/20 border-red-500/40",
+    MAJOR:        "text-orange-400 bg-orange-500/20 border-orange-500/40",
+    MODERATE:     "text-amber-400 bg-amber-500/20 border-amber-500/40",
+    MINOR:        "text-blue-400 bg-blue-500/20 border-blue-500/40",
+  };
+
+  const getRiskColor = (level: string) => riskColors[level] || riskColors.LOW;
+  const current = getRiskColor(data.riskLevel);
+
+  const outlooks = [
+    { label: "24h", ...data.outlook24h },
+    { label: "48h", ...data.outlook48h },
+    { label: "72h", ...data.outlook72h },
+  ];
+
+  const maxContrib = Math.max(...data.factors.map(f => f.contribution));
+
+  return (
+    <Card className={`border ${current.border} ${current.bg}`}>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Brain className={`h-5 w-5 ${current.text}`} />
+            <div>
+              <CardTitle className="text-sm">Predictive Flood Outlook</CardTitle>
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                Generated {new Date(data.generatedAt).toLocaleTimeString()}
+              </p>
+            </div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className={`text-4xl font-black tabular-nums leading-none ${current.text}`}>
+              {data.compositeScore}
+            </div>
+            <div className="text-[10px] text-muted-foreground">/ 100</div>
+            <Badge className={`${current.bg} ${current.text} border ${current.border} text-xs font-bold mt-1`}>
+              {data.riskLevel}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Timeline bars */}
+        <div>
+          <div className="text-xs font-semibold text-muted-foreground mb-2">Risk Outlook</div>
+          <div className="space-y-2">
+            {outlooks.map(o => {
+              const c = getRiskColor(o.level);
+              return (
+                <div key={o.label} className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground w-7 shrink-0">{o.label}</span>
+                  <div className="flex-1 h-5 bg-muted/40 rounded-full overflow-hidden relative">
+                    <div
+                      className={`h-full ${c.bar} rounded-full transition-all opacity-80`}
+                      style={{ width: `${Math.min(100, o.score)}%` }}
+                    />
+                  </div>
+                  <span className={`text-xs font-bold w-14 text-right ${c.text}`}>
+                    {o.score} <span className="font-normal text-muted-foreground">{o.level}</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Factor breakdown */}
+        <div>
+          <div className="text-xs font-semibold text-muted-foreground mb-2">Factor Breakdown</div>
+          <div className="space-y-1.5">
+            {data.factors.map(f => {
+              const pct = maxContrib > 0 ? (f.contribution / maxContrib) * 100 : 0;
+              const scoreLevel = f.score > 70 ? "bg-red-500" : f.score > 50 ? "bg-orange-500" : f.score > 30 ? "bg-amber-500" : "bg-emerald-500";
+              return (
+                <div key={f.name}>
+                  <div className="flex items-center justify-between text-xs mb-0.5">
+                    <span className="font-medium">{f.name}</span>
+                    <span className="text-muted-foreground">
+                      <span className="font-bold text-foreground">{f.score}</span>/100
+                      <span className="ml-1 text-[10px]">×{f.weight} = <span className="font-semibold">{f.contribution.toFixed(1)}</span></span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-muted/40 rounded-full overflow-hidden">
+                    <div className={`h-full ${scoreLevel} rounded-full`} style={{ width: `${f.score}%` }} />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{f.detail}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Narrative */}
+        <div className="bg-muted/20 rounded-lg p-3 border border-border">
+          <div className="text-xs font-semibold text-muted-foreground mb-1.5">AI Narrative</div>
+          <p className="text-sm leading-relaxed text-foreground/90">
+            {data.narrative}
+          </p>
+        </div>
+
+        {/* Historical matches */}
+        <div>
+          <div className="text-xs font-semibold text-muted-foreground mb-2">Historical Pattern Match</div>
+          <div className="space-y-2">
+            {data.historicalMatches.slice(0, 2).map(m => {
+              const sc = sevColors[m.severity] || sevColors.MINOR;
+              const simColor = m.similarity > 60 ? "text-red-400" : m.similarity > 40 ? "text-amber-400" : "text-muted-foreground";
+              return (
+                <div key={m.name} className="bg-accent/30 rounded-lg p-2.5 border border-border">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold leading-tight">{m.name}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Badge variant="outline" className={`text-[10px] px-1 py-0 border ${sc}`}>{m.severity}</Badge>
+                      <span className={`text-xs font-bold ${simColor}`}>{m.similarity}%</span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug mb-1">{m.description}</p>
+                  <div className="text-[10px] text-muted-foreground/70 font-mono">{m.peakComparison}</div>
+                </div>
+              );
+            })}
+          </div>
+          {data.historicalMatches.every(m => m.similarity < 40) && (
+            <div className="text-[10px] text-emerald-400 mt-1.5 flex items-center gap-1">
+              <CheckCircle className="h-3 w-3" />
+              Current conditions are not in a historical flood pattern
+            </div>
+          )}
+        </div>
+
+        {/* Trigger conditions */}
+        <div className="grid grid-cols-1 gap-2">
+          <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
+            <div className="text-[10px] text-red-400 font-semibold mb-0.5 flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3" /> ESCALATION TRIGGER
+            </div>
+            <div className="text-xs text-foreground/80">{data.triggers.escalation}</div>
+          </div>
+          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2.5">
+            <div className="text-[10px] text-emerald-400 font-semibold mb-0.5 flex items-center gap-1">
+              <CheckCircle className="h-3 w-3" /> DE-ESCALATION
+            </div>
+            <div className="text-xs text-foreground/80">{data.triggers.deescalation}</div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // === Stale Banner ===
 function StaleBanner() {
   return (
@@ -1382,6 +1709,7 @@ export default function Dashboard() {
   const {
     gauges, forecast, weather, ensemble, news,
     groundwater, surfaceObs, gridpointData, historicalStats, soilMoisture,
+    predictiveOutlook,
     refreshAll, countdown, lastRefresh,
     isAnyLoading, connectionStatus, isDataStale,
   } = useDashboardData();
@@ -1414,6 +1742,7 @@ export default function Dashboard() {
   const reservoirGauges = gaugeList.filter(g => g.isReservoir);
   const ensembleBounds = ensemble.data?.ensembleBounds;
   const histStats = historicalStats.data as HistoricalStats | undefined;
+  const outlookData = predictiveOutlook.data as PredictiveOutlook | undefined;
 
   return (
     <TooltipProvider>
@@ -1434,17 +1763,18 @@ export default function Dashboard() {
           {/* KPI Row */}
           <KPICards gaugesResp={gaugesResp} weather={weather.data} />
 
-          {/* Confluence Sync (v2 feature 4) */}
+          {/* Confluence Sync */}
           <ConfluenceSyncPanel gaugesResp={gaugesResp} />
 
-          {/* Main two-column layout */}
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            {/* Left Column (60%) */}
-            <div className="lg:col-span-3 space-y-4">
-              {/* Reservoir Cards */}
-              {reservoirGauges.map(g => (
-                <ReservoirCard key={g.id} gauge={g} />
-              ))}
+          {/* V4 Main two-column layout: 55% / 45% */}
+          <div className="grid grid-cols-1 lg:grid-cols-11 gap-4">
+            {/* Left Column (55% = 6/11) */}
+            <div className="lg:col-span-6 space-y-4">
+              {/* V4: Predictive Outlook Panel — TOP of left column */}
+              <PredictiveOutlookPanel
+                data={outlookData}
+                isLoading={predictiveOutlook.isLoading}
+              />
 
               {/* Gauge Cards Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1466,40 +1796,54 @@ export default function Dashboard() {
                 ))}
               </div>
 
-              {/* Confluence Hydraulics — V3 */}
+              {/* Confluence Hydraulics */}
               <ConfluenceHydraulicsPanel gaugesResp={gaugesResp} />
 
-              {/* Charts */}
+              {/* Stage + Flow Charts */}
               {gaugeList.length > 0 && <StageChart gauges={gaugeList} ensembleBounds={ensembleBounds} />}
               {gaugeList.length > 0 && <FlowChart gauges={gaugeList} />}
 
-              {/* Radar — V3 */}
-              <RadarPanel />
+              {/* V4: Reservoir Cards moved here below charts */}
+              {reservoirGauges.map(g => (
+                <ReservoirCard key={g.id} gauge={g} />
+              ))}
             </div>
 
-            {/* Right Column (40%) */}
-            <div className="lg:col-span-2 space-y-4">
-              {/* V3: Groundwater + Soil Moisture */}
-              <GroundwaterPanel data={groundwater.data as GroundwaterData | undefined} />
-              <SoilMoisturePanel data={soilMoisture.data as SoilMoisture | undefined} />
+            {/* Right Column (45% = 5/11) */}
+            <div className="lg:col-span-5 space-y-4">
+              {/* V4: Basin State (consolidated GW + Soil + Atmos) */}
+              <BasinStatePanel
+                groundwater={groundwater.data as GroundwaterData | undefined}
+                soilMoisture={soilMoisture.data as SoilMoisture | undefined}
+                surfaceObs={surfaceObs.data as SurfaceObs | undefined}
+              />
 
+              {/* Compound Risk (enhanced) */}
               <CompoundRiskPanel
                 gauges={gaugeList}
                 weather={weather.data}
                 groundwater={groundwater.data as GroundwaterData | undefined}
                 soilMoisture={soilMoisture.data as SoilMoisture | undefined}
               />
+
+              {/* Alerts & Reports */}
               <LocalReportsPanel newsData={news.data} />
+
+              {/* NWS Weather + Forecast */}
               <WeatherPanel weather={weather.data} />
 
-              {/* V3: Atmospheric + SPC */}
+              {/* V4: Imagery Panel (tabbed Radar / PWAT / 850mb) */}
+              <ImageryPanel />
+
+              {/* V4: QPF + Atmospheric detail (from AtmosphericPanel, kept for QPF chart) */}
               <AtmosphericPanel
                 surfaceObs={surfaceObs.data as SurfaceObs | undefined}
                 gridpoint={gridpointData.data as GridpointData | undefined}
               />
-              <SPCImagesPanel />
 
+              {/* AFD + RVA + Data Sources (collapsible stack) */}
               <AFDPanel forecast={forecast.data} />
+              <RiverSummaryPanel forecast={forecast.data} />
               <DataSourceStatus
                 gauges={{ isError: gauges.isError }}
                 forecast={{ isError: forecast.isError }}
@@ -1510,7 +1854,6 @@ export default function Dashboard() {
                 gridpoint={{ isError: gridpointData.isError }}
                 soilMoisture={{ isError: soilMoisture.isError }}
               />
-              <RiverSummaryPanel forecast={forecast.data} />
             </div>
           </div>
         </main>

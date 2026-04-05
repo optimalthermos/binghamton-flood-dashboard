@@ -72,6 +72,12 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
+  const predictiveOutlook = useQuery<any>({
+    queryKey: ["/api/predictive-outlook"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
   const refreshAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/gauges"] });
     queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
@@ -81,6 +87,7 @@ export function useDashboardData() {
     queryClient.invalidateQueries({ queryKey: ["/api/groundwater"] });
     queryClient.invalidateQueries({ queryKey: ["/api/surface-obs"] });
     queryClient.invalidateQueries({ queryKey: ["/api/gridpoint-data"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/predictive-outlook"] });
     // Don't refresh daily caches on every cycle
     setLastRefresh(new Date());
     setCountdown(REFRESH_INTERVAL / 1000);
@@ -116,6 +123,7 @@ export function useDashboardData() {
     gridpointData,
     historicalStats,
     soilMoisture,
+    predictiveOutlook,
     refreshAll,
     countdown,
     lastRefresh,
