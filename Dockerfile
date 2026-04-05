@@ -1,11 +1,15 @@
 FROM node:20-slim
 
-# Python + GDAL for CPC soil moisture GeoTIFF extraction
+# System dependencies: curl for healthcheck, python3 for soil moisture script,
+# ffmpeg for NYSDOT webcam frame extraction
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl python3 python3-pip gdal-bin python3-gdal libgdal-dev \
-    && python3 -m pip install --break-system-packages rasterio \
-    && apt-get purge -y libgdal-dev && apt-get autoremove -y \
+    curl python3 python3-pip ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# Try to install rasterio (for soil moisture GeoTIFF extraction)
+# If it fails (missing GDAL headers), the endpoint degrades gracefully
+RUN python3 -m pip install --break-system-packages rasterio 2>/dev/null || \
+    echo "rasterio install failed — soil moisture will show as unavailable"
 
 WORKDIR /app
 
