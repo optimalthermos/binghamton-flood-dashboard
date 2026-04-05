@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
 import { WebcamPanel } from "@/components/WebcamPanel";
 import { CommunityFeedPanel } from "@/components/CommunityFeedPanel";
+import HamRadioPanel from "@/components/HamRadioPanel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1858,6 +1859,7 @@ export default function Dashboard() {
               {/* AFD + RVA + Data Sources (collapsible stack) */}
               <AFDPanel forecast={forecast.data} />
               <RiverSummaryPanel forecast={forecast.data} />
+              <HamRadioPanel />
               <DataSourceStatus
                 gauges={{ isError: gauges.isError }}
                 forecast={{ isError: forecast.isError }}
