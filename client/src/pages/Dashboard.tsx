@@ -24,7 +24,7 @@ import {
 import type {
   GaugeData, WeatherData, GaugesResponse, EnsembleData, NewsData,
   GroundwaterData, SurfaceObs, GridpointData, HistoricalStats, HistoricalStatEntry, SoilMoisture,
-  PredictiveOutlook,
+  PredictiveOutlook, ForecastData,
 } from "@shared/schema";
 
 // === Utility helpers ===
@@ -131,8 +131,17 @@ function DashboardHeader({ countdown, lastRefresh, onRefresh, isLoading, connect
   );
 }
 
+// === Section Label divider for right column ===
+function SectionLabel({ label }: { label: string }) {
+  return (
+    <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50 px-1 pt-3 pb-1">
+      {label}
+    </div>
+  );
+}
+
 // === KPI Cards (v2: discharge-weighted basin trend, QPF countdown) ===
-function KPICards({ gaugesResp, weather }: { gaugesResp: GaugesResponse | undefined; weather: WeatherData | undefined }) {
+function KPICards({ gaugesResp, weather, outlookData }: { gaugesResp: GaugesResponse | undefined; weather: WeatherData | undefined; outlookData?: PredictiveOutlook }) {
   const gauges = gaugesResp?.gauges || [];
   const onlineGauges = gauges.filter(g => !g.isOffline && !g.isReservoir);
 
@@ -175,6 +184,11 @@ function KPICards({ gaugesResp, weather }: { gaugesResp: GaugesResponse | undefi
 
   // Data freshness
   const freshCount = onlineGauges.filter(g => freshnessMins(g.lastUpdated) < 120).length;
+
+  // Risk Score from predictive outlook
+  const riskScore = outlookData?.compositeScore ?? null;
+  const riskLevel = outlookData?.riskLevel ?? null;
+  const riskScoreColor = riskLevel === "HIGH" ? "text-red-400" : riskLevel === "ELEVATED" ? "text-orange-400" : riskLevel === "MODERATE" ? "text-amber-400" : riskLevel === "LOW" ? "text-emerald-400" : "text-muted-foreground";
 
   const kpis: Array<{ label: string; value: string; sub: string; icon: React.ReactNode; color: string }> = [
     {
@@ -219,10 +233,17 @@ function KPICards({ gaugesResp, weather }: { gaugesResp: GaugesResponse | undefi
       icon: <Wifi className="h-5 w-5" />,
       color: freshCount === onlineGauges.length ? "text-emerald-400" : "text-amber-400",
     },
+    {
+      label: "Risk Score",
+      value: riskScore !== null ? `${riskScore}` : "—",
+      sub: riskLevel ? `${riskLevel} risk level` : "Predictive analysis",
+      icon: <Brain className="h-5 w-5" />,
+      color: riskScoreColor,
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
       {kpis.map(kpi => (
         <Card key={kpi.label} className="bg-card border-border">
           <CardContent className="p-3">
@@ -1294,6 +1315,9 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
     { name: "IEM NEXRAD Radar", status: "ok", url: "https://mesonet.agron.iastate.edu/", note: "Composite reflectivity WMS" },
     { name: "USGS Historical Stats", status: "ok", url: "https://waterservices.usgs.gov/nwis/stat/", note: "Daily flow percentiles" },
     { name: "Snoflo", status: "broken", url: "https://www.snoflo.org/", note: "BROKEN — serving cached Summer 2025 data" },
+    { name: "NYSDOT 511NY Cameras", status: "ok", url: "https://511ny.org/", note: "6 traffic cameras via HLS snapshot" },
+    { name: "Reddit Community Feed", status: "ok", url: "https://www.reddit.com/r/binghamton/", note: "r/binghamton + r/upstate_new_york RSS" },
+    { name: "Broadcastify Scanner", status: "ok", url: "https://www.broadcastify.com/listen/ctid/1828", note: "Broome County public safety audio" },
   ];
 
   const statusIcon = (s: string) => {
@@ -1521,6 +1545,7 @@ function ImageryPanel() {
 
 // === V4: Predictive Outlook Panel ===
 function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook; isLoading?: boolean }) {
+  const [showAllFactors, setShowAllFactors] = useState(false);
   if (isLoading) {
     return (
       <Card className="bg-card border-border animate-pulse">
@@ -1561,8 +1586,6 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
     { label: "48h", ...data.outlook48h },
     { label: "72h", ...data.outlook72h },
   ];
-
-  const maxContrib = Math.max(...data.factors.map(f => f.contribution));
 
   return (
     <Card className={`border ${current.border} ${current.bg}`}>
@@ -1615,10 +1638,23 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
 
         {/* Factor breakdown */}
         <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-2">Factor Breakdown</div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs font-semibold text-muted-foreground">Factor Breakdown</div>
+            {data.factors.length > 3 && (
+              <button
+                onClick={() => setShowAllFactors(v => !v)}
+                className="text-[10px] text-primary hover:underline flex items-center gap-1"
+              >
+                {showAllFactors ? (
+                  <><ChevronUp className="h-3 w-3" /> Show fewer</>
+                ) : (
+                  <><ChevronDown className="h-3 w-3" /> Show all {data.factors.length}</>
+                )}
+              </button>
+            )}
+          </div>
           <div className="space-y-1.5">
-            {data.factors.map(f => {
-              const pct = maxContrib > 0 ? (f.contribution / maxContrib) * 100 : 0;
+            {(showAllFactors ? data.factors : data.factors.slice(0, 3)).map(f => {
               const scoreLevel = f.score > 70 ? "bg-red-500" : f.score > 50 ? "bg-orange-500" : f.score > 30 ? "bg-amber-500" : "bg-emerald-500";
               return (
                 <div key={f.name}>
@@ -1637,6 +1673,11 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
               );
             })}
           </div>
+          {!showAllFactors && data.factors.length > 3 && (
+            <div className="text-[10px] text-muted-foreground/60 mt-1.5">
+              +{data.factors.length - 3} more factors hidden
+            </div>
+          )}
         </div>
 
         {/* Narrative */}
@@ -1764,20 +1805,29 @@ export default function Dashboard() {
           {isDataStale && <StaleBanner />}
 
           {/* KPI Row */}
-          <KPICards gaugesResp={gaugesResp} weather={weather.data} />
+          <KPICards gaugesResp={gaugesResp} weather={weather.data} outlookData={outlookData} />
 
           {/* Confluence Sync */}
           <ConfluenceSyncPanel gaugesResp={gaugesResp} />
 
           {/* V4 Main two-column layout: 55% / 45% */}
-          <div className="grid grid-cols-1 lg:grid-cols-11 gap-4">
+          <div className="grid grid-cols-1 xl:grid-cols-11 gap-4">
             {/* Left Column (55% = 6/11) */}
-            <div className="lg:col-span-6 space-y-4">
+            <div className="xl:col-span-6 space-y-4">
               {/* V4: Predictive Outlook Panel — TOP of left column */}
               <PredictiveOutlookPanel
                 data={outlookData}
                 isLoading={predictiveOutlook.isLoading}
               />
+
+              {/* Reservoir Cards — prominent placement above hydraulics */}
+              {reservoirGauges.length > 0 && (
+                <div className="grid grid-cols-1 gap-3">
+                  {reservoirGauges.map(g => (
+                    <ReservoirCard key={g.id} gauge={g} />
+                  ))}
+                </div>
+              )}
 
               {/* Gauge Cards Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1812,20 +1862,22 @@ export default function Dashboard() {
                 isLoading={webcams.isLoading}
               />
 
-              {/* V4: Reservoir Cards moved here below charts */}
-              {reservoirGauges.map(g => (
-                <ReservoirCard key={g.id} gauge={g} />
-              ))}
             </div>
 
             {/* Right Column (45% = 5/11) */}
-            <div className="lg:col-span-5 space-y-4">
+            <div className="xl:col-span-5 space-y-4">
+              {/* ─── Basin Intelligence ─── */}
+              <SectionLabel label="Basin Intelligence" />
+
               {/* V4: Basin State (consolidated GW + Soil + Atmos) */}
               <BasinStatePanel
                 groundwater={groundwater.data as GroundwaterData | undefined}
                 soilMoisture={soilMoisture.data as SoilMoisture | undefined}
                 surfaceObs={surfaceObs.data as SurfaceObs | undefined}
               />
+
+              {/* ─── Risk & Alerts ─── */}
+              <SectionLabel label="Risk & Alerts" />
 
               {/* Compound Risk (enhanced) */}
               <CompoundRiskPanel
@@ -1844,6 +1896,9 @@ export default function Dashboard() {
                 isLoading={communityFeed.isLoading}
               />
 
+              {/* ─── Weather & Analysis ─── */}
+              <SectionLabel label="Weather & Analysis" />
+
               {/* NWS Weather + Forecast */}
               <WeatherPanel weather={weather.data} />
 
@@ -1855,6 +1910,9 @@ export default function Dashboard() {
                 surfaceObs={surfaceObs.data as SurfaceObs | undefined}
                 gridpoint={gridpointData.data as GridpointData | undefined}
               />
+
+              {/* ─── Reference ─── */}
+              <SectionLabel label="Reference" />
 
               {/* AFD + RVA + Data Sources (collapsible stack) */}
               <AFDPanel forecast={forecast.data} />

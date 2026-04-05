@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown, ChevronUp, Radio, AlertTriangle, ExternalLink, Zap } from "lucide-react";
+import { ChevronDown, ChevronUp, Radio, AlertTriangle, ExternalLink, Zap, Play, Pause, Volume2, VolumeX, Loader2, WifiOff } from "lucide-react";
 
 // === Static emergency frequency data for Binghamton/Broome County ===
 
@@ -38,9 +38,265 @@ const NOAA_WEATHER_RADIO = {
   note: "24/7 automated forecasts, watches, warnings from NWS BGM",
 };
 
+// === Live Scanner Feeds ===
+
+interface ScannerFeed {
+  id: number;
+  name: string;
+  description: string;
+  listeners: number;
+  tags: string[];
+}
+
+const SCANNER_FEEDS: ScannerFeed[] = [
+  {
+    id: 39447,
+    name: "Broome County Public Safety (P25)",
+    description: "Police/Fire/EMS dispatch — primary Broome County feed",
+    listeners: 30,
+    tags: ["Police", "Fire", "EMS"],
+  },
+  {
+    id: 43682,
+    name: "Broome County Battalion 2",
+    description: "Fire/EMS + Binghamton PD — Battalion 2 operations",
+    listeners: 4,
+    tags: ["Fire", "EMS", "BPD"],
+  },
+  {
+    id: 39886,
+    name: "Broome County Fire/EMS (P25)",
+    description: "Fire and EMS only — dedicated P25 trunked system",
+    listeners: 1,
+    tags: ["Fire", "EMS"],
+  },
+];
+
+type PlayerState = "idle" | "connecting" | "playing" | "error";
+
+interface AudioPlayerRowProps {
+  feed: ScannerFeed;
+  isActive: boolean;
+  onActivate: (id: number) => void;
+  onDeactivate: () => void;
+}
+
+function AudioPlayerRow({ feed, isActive, onActivate, onDeactivate }: AudioPlayerRowProps) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playerState, setPlayerState] = useState<PlayerState>("idle");
+  const [volume, setVolume] = useState(0.8);
+  const [isMuted, setIsMuted] = useState(false);
+
+  const streamUrl = `https://broadcastify.cdnstream1.com/${feed.id}`;
+  const webPlayerUrl = `https://www.broadcastify.com/webPlayer/${feed.id}`;
+
+  // When isActive changes, start or stop
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (isActive) {
+      setPlayerState("connecting");
+      audio.src = streamUrl;
+      audio.load();
+      const playPromise = audio.play();
+      if (playPromise) {
+        playPromise
+          .then(() => setPlayerState("playing"))
+          .catch(() => setPlayerState("error"));
+      }
+    } else {
+      audio.pause();
+      audio.src = "";
+      setPlayerState("idle");
+    }
+  }, [isActive, streamUrl]);
+
+  // Apply volume changes
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = isMuted ? 0 : volume;
+  }, [volume, isMuted]);
+
+  const handlePlayPause = useCallback(() => {
+    if (isActive) {
+      onDeactivate();
+    } else {
+      onActivate(feed.id);
+    }
+  }, [isActive, feed.id, onActivate, onDeactivate]);
+
+  const handleError = useCallback(() => {
+    setPlayerState("error");
+  }, []);
+
+  const handlePlaying = useCallback(() => {
+    setPlayerState("playing");
+  }, []);
+
+  const handleWaiting = useCallback(() => {
+    if (isActive) setPlayerState("connecting");
+  }, [isActive]);
+
+  const stateColor = playerState === "playing"
+    ? "text-emerald-400"
+    : playerState === "connecting"
+    ? "text-amber-400"
+    : playerState === "error"
+    ? "text-red-400"
+    : "text-muted-foreground";
+
+  const stateLabel = playerState === "playing"
+    ? "Playing"
+    : playerState === "connecting"
+    ? "Connecting…"
+    : playerState === "error"
+    ? "Error"
+    : "Idle";
+
+  return (
+    <div className={`rounded-lg border p-3 transition-all ${
+      isActive
+        ? "bg-primary/10 border-primary/30"
+        : "bg-accent/30 border-border hover:border-border/80"
+    }`}>
+      {/* Hidden audio element */}
+      <audio
+        ref={audioRef}
+        preload="none"
+        onError={handleError}
+        onPlaying={handlePlaying}
+        onWaiting={handleWaiting}
+        onStalled={handleError}
+      />
+
+      {/* Top row: play button + name + LIVE badge */}
+      <div className="flex items-start gap-3">
+        {/* Play/Pause button */}
+        <button
+          onClick={handlePlayPause}
+          className={`shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-all ${
+            isActive
+              ? "bg-primary text-primary-foreground hover:bg-primary/90"
+              : "bg-accent hover:bg-accent/80 text-foreground"
+          }`}
+          aria-label={isActive ? "Pause stream" : "Play stream"}
+        >
+          {playerState === "connecting" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : isActive && playerState === "playing" ? (
+            <Pause className="h-4 w-4" />
+          ) : (
+            <Play className="h-4 w-4 ml-0.5" />
+          )}
+        </button>
+
+        {/* Feed info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-xs leading-tight">{feed.name}</span>
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+              <span className="text-[10px] font-bold text-red-400 tracking-wide">LIVE</span>
+            </span>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{feed.description}</p>
+
+          {/* Tags + listener count */}
+          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            {feed.tags.map(tag => (
+              <Badge key={tag} variant="outline" className="text-[9px] px-1 py-0 h-4">{tag}</Badge>
+            ))}
+            <span className="text-[10px] text-muted-foreground ml-auto">{feed.listeners} listening</span>
+          </div>
+        </div>
+
+        {/* External link */}
+        <a
+          href={webPlayerUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 text-muted-foreground hover:text-primary transition-colors p-1"
+          title="Open in Broadcastify web player"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </div>
+
+      {/* Volume + status row (only visible when active) */}
+      {isActive && (
+        <div className="mt-2.5 flex items-center gap-2">
+          {/* Status */}
+          <span className={`text-[10px] font-medium ${stateColor} shrink-0`}>
+            {playerState === "connecting" && <Loader2 className="h-3 w-3 inline mr-1 animate-spin" />}
+            {playerState === "error" && <WifiOff className="h-3 w-3 inline mr-1" />}
+            {stateLabel}
+          </span>
+
+          {/* Volume toggle */}
+          <button
+            onClick={() => setIsMuted(m => !m)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            aria-label={isMuted ? "Unmute" : "Mute"}
+          >
+            {isMuted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+          </button>
+
+          {/* Volume slider */}
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={isMuted ? 0 : volume}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setVolume(v);
+              if (v > 0) setIsMuted(false);
+            }}
+            className="flex-1 h-1 accent-primary cursor-pointer"
+            aria-label="Volume"
+          />
+        </div>
+      )}
+
+      {/* Error fallback */}
+      {playerState === "error" && (
+        <div className="mt-2 text-[11px] text-red-400 flex items-center gap-1.5">
+          <WifiOff className="h-3 w-3 shrink-0" />
+          <span>
+            Stream unavailable —{" "}
+            <a
+              href={webPlayerUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-red-300"
+            >
+              listen on Broadcastify
+            </a>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// === Main HamRadioPanel ===
+
 export default function HamRadioPanel() {
   const [open, setOpen] = useState(false);
   const [showAllRepeaters, setShowAllRepeaters] = useState(false);
+  const [activeFeedId, setActiveFeedId] = useState<number | null>(null);
+
+  const handleActivate = useCallback((id: number) => {
+    setActiveFeedId(id);
+  }, []);
+
+  const handleDeactivate = useCallback(() => {
+    setActiveFeedId(null);
+  }, []);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -52,6 +308,12 @@ export default function HamRadioPanel() {
                 <Radio className="h-4 w-4" />
                 Ham Radio Emergency
                 <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">SKYWARN</Badge>
+                {activeFeedId && (
+                  <span className="flex items-center gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-[10px] text-emerald-400 font-medium">STREAMING</span>
+                  </span>
+                )}
               </CardTitle>
               {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </div>
@@ -59,6 +321,41 @@ export default function HamRadioPanel() {
         </CollapsibleTrigger>
         <CollapsibleContent>
           <CardContent className="space-y-4 text-xs">
+
+            {/* === Live Scanner Feeds === */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                  Live Scanner Feeds — Broome County
+                </span>
+                <a
+                  href="https://www.broadcastify.com/listen/ctid/1828"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline flex items-center gap-1 text-[10px]"
+                >
+                  All feeds <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+              <p className="text-muted-foreground mb-2.5 leading-snug">
+                Live Broome County public safety audio via Broadcastify. One stream plays at a time.
+                Streams may require a moment to connect. CORS policy may block playback in some browsers — use the external link as fallback.
+              </p>
+              <div className="space-y-2">
+                {SCANNER_FEEDS.map(feed => (
+                  <AudioPlayerRow
+                    key={feed.id}
+                    feed={feed}
+                    isActive={activeFeedId === feed.id}
+                    onActivate={handleActivate}
+                    onDeactivate={handleDeactivate}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-border" />
 
             {/* NOAA Weather Radio */}
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-2.5">
