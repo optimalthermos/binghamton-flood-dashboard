@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
+import { WebcamPanel } from "@/components/WebcamPanel";
+import { CommunityFeedPanel } from "@/components/CommunityFeedPanel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1709,7 +1711,7 @@ export default function Dashboard() {
   const {
     gauges, forecast, weather, ensemble, news,
     groundwater, surfaceObs, gridpointData, historicalStats, soilMoisture,
-    predictiveOutlook,
+    predictiveOutlook, webcams, communityFeed,
     refreshAll, countdown, lastRefresh,
     isAnyLoading, connectionStatus, isDataStale,
   } = useDashboardData();
@@ -1803,6 +1805,12 @@ export default function Dashboard() {
               {gaugeList.length > 0 && <StageChart gauges={gaugeList} ensembleBounds={ensembleBounds} />}
               {gaugeList.length > 0 && <FlowChart gauges={gaugeList} />}
 
+              {/* V5: Webcam Panel — between charts and reservoirs */}
+              <WebcamPanel
+                webcamsData={webcams.data}
+                isLoading={webcams.isLoading}
+              />
+
               {/* V4: Reservoir Cards moved here below charts */}
               {reservoirGauges.map(g => (
                 <ReservoirCard key={g.id} gauge={g} />
@@ -1828,6 +1836,12 @@ export default function Dashboard() {
 
               {/* Alerts & Reports */}
               <LocalReportsPanel newsData={news.data} />
+
+              {/* V5: Community Feed Panel — after local reports, before weather */}
+              <CommunityFeedPanel
+                feedData={communityFeed.data}
+                isLoading={communityFeed.isLoading}
+              />
 
               {/* NWS Weather + Forecast */}
               <WeatherPanel weather={weather.data} />

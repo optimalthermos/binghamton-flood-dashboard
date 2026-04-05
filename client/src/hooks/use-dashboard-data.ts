@@ -78,6 +78,19 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
+  // V5: Webcam metadata + community feed
+  const webcams = useQuery<any>({
+    queryKey: ["/api/webcams"],
+    staleTime: 600000, // 10 min
+    refetchInterval: false,
+  });
+
+  const communityFeed = useQuery<any>({
+    queryKey: ["/api/community-feed"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
   const refreshAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/gauges"] });
     queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
@@ -88,6 +101,7 @@ export function useDashboardData() {
     queryClient.invalidateQueries({ queryKey: ["/api/surface-obs"] });
     queryClient.invalidateQueries({ queryKey: ["/api/gridpoint-data"] });
     queryClient.invalidateQueries({ queryKey: ["/api/predictive-outlook"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/community-feed"] });
     // Don't refresh daily caches on every cycle
     setLastRefresh(new Date());
     setCountdown(REFRESH_INTERVAL / 1000);
@@ -124,6 +138,8 @@ export function useDashboardData() {
     historicalStats,
     soilMoisture,
     predictiveOutlook,
+    webcams,
+    communityFeed,
     refreshAll,
     countdown,
     lastRefresh,

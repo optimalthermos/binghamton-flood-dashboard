@@ -268,3 +268,34 @@ export const predictiveOutlookSchema = z.object({
 });
 
 export type PredictiveOutlook = z.infer<typeof predictiveOutlookSchema>;
+
+// V5: Webcam feeds
+export const webcamSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.enum(["nws", "dot"]),
+  imageUrl: z.string(),
+  refreshInterval: z.number(),
+});
+
+export const communityPostSchema = z.object({
+  title: z.string(),
+  date: z.string(),
+  subreddit: z.string(),
+  link: z.string(),
+  hasImage: z.boolean(),
+  imageUrl: z.string().nullable(),
+  isFloodRelated: z.boolean(),
+  anonymizedAuthor: z.string(),
+});
+
+export const communityFeedSchema = z.object({
+  posts: z.array(communityPostSchema),
+  lastUpdated: z.string(),
+  floodPostCount: z.number(),
+  totalPosts: z.number(),
+});
+
+export type Webcam = z.infer<typeof webcamSchema>;
+export type CommunityPost = z.infer<typeof communityPostSchema>;
+export type CommunityFeed = z.infer<typeof communityFeedSchema>;

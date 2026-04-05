@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { execSync } from "child_process";
+import { createHash } from "crypto";
 import type {
   GaugeData, TimeSeriesPoint, ForecastData, WeatherData, EnsembleData,
   GaugesResponse, ConfluenceSync, BasinTrend, FrostData, QPFData, NewsData, NewsItem,
@@ -1065,6 +1066,136 @@ async function fetchPredictiveOutlook() {
   };
 }
 
+// --- V5: Webcam + Community Feed ---
+
+const DOT_CAMERAS = [
+  { id: "R9_007", name: "NY 17 East of Glenwood Rd", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R9_007/playlist.m3u8", lat: 42.1155, lon: -75.9378 },
+  { id: "R9_001", name: "NY 17 west of I-81", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_001/playlist.m3u8", lat: 42.1129, lon: -75.9202 },
+  { id: "R9_004", name: "I-81 at Exit 5", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_004/playlist.m3u8", lat: 42.1236, lon: -75.9051 },
+  { id: "R9_005", name: "I-81 at Exit 4", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_005/playlist.m3u8", lat: 42.1145, lon: -75.8988 },
+  { id: "R9_008", name: "I-81 NB at Windy Hill Rd", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R9_008/playlist.m3u8", lat: 42.1101, lon: -75.8641 },
+  { id: "R9_006", name: "NY 17 East of Airport Rd", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_006/playlist.m3u8", lat: 42.1198, lon: -75.9442 },
+];
+
+const DOT_CAM_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+const dotCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
+
+function getDotCamCached(id: string): Buffer | null {
+  const entry = dotCamCache[id];
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp < DOT_CAM_CACHE_TTL) return entry.buf;
+  return null;
+}
+
+function setDotCamCache(id: string, buf: Buffer): void {
+  dotCamCache[id] = { buf, timestamp: Date.now() };
+}
+
+function hashUsername(username: string): string {
+  return createHash("md5").update(username).digest("hex").slice(0, 4).toUpperCase();
+}
+
+async function fetchCommunityFeed() {
+  const RSS_URLS = [
+    "https://www.reddit.com/r/binghamton/new.rss?limit=15",
+    "https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=flood+flooding+river+storm+binghamton&restrict_sr=on&sort=new&t=month&limit=10",
+  ];
+
+  const FLOOD_KEYWORDS = /flood|river|water level|storm|road closed|warning|emergency|evacuate|dam/i;
+  const IMAGE_SOURCES = /i\.redd\.it|preview\.redd\.it|imgur|\.(jpg|jpeg|png)/i;
+
+  function extractTagText(xml: string, tag: string): string {
+    const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\/${tag}>`, "i"));
+    if (!m) return "";
+    return m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim();
+  }
+
+  function extractAttr(xml: string, tag: string, attr: string): string {
+    const m = xml.match(new RegExp(`<${tag}[^>]*\\s${attr}=["']([^"']*)["'][^>]*>`, "i"));
+    return m ? m[1] : "";
+  }
+
+  function extractFirstImageUrl(html: string): string | null {
+    const m = html.match(/(https?:\/\/[^\s"'>]+\.(?:jpg|jpeg|png|gif)|https?:\/\/(?:i\.redd\.it|preview\.redd\.it|i\.imgur\.com)\/[^\s"'>]+)/i);
+    return m ? m[1] : null;
+  }
+
+  function extractSubreddit(link: string): string {
+    const m = link.match(/reddit\.com\/r\/([^\/]+)/i);
+    return m ? m[1] : "reddit";
+  }
+
+  const allPosts: Array<{
+    title: string;
+    date: string;
+    subreddit: string;
+    link: string;
+    hasImage: boolean;
+    imageUrl: string | null;
+    isFloodRelated: boolean;
+    anonymizedAuthor: string;
+  }> = [];
+
+  const seenLinks = new Set<string>();
+
+  for (const rssUrl of RSS_URLS) {
+    try {
+      const res = await fetchWithUA(rssUrl, 12000);
+      if (!res.ok) continue;
+      const xml = await res.text();
+
+      // Split into <entry> blocks
+      const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
+      let m;
+      while ((m = entryRegex.exec(xml)) !== null) {
+        const entry = m[1];
+
+        const title = extractTagText(entry, "title");
+        const updated = extractTagText(entry, "updated");
+        const linkHref = extractAttr(entry, "link", "href");
+        const authorName = extractTagText(entry, "name");
+        const content = extractTagText(entry, "content") || extractTagText(entry, "summary");
+
+        if (!linkHref || seenLinks.has(linkHref)) continue;
+        seenLinks.add(linkHref);
+
+        const hasImage = IMAGE_SOURCES.test(content);
+        const imageUrl = hasImage ? extractFirstImageUrl(content) : null;
+        const isFloodRelated = FLOOD_KEYWORDS.test(title) || FLOOD_KEYWORDS.test(content);
+        const anonymizedAuthor = authorName ? `User-${hashUsername(authorName)}` : "User-????";
+        const subreddit = extractSubreddit(linkHref);
+
+        allPosts.push({
+          title: title || "(no title)",
+          date: updated || new Date().toISOString(),
+          subreddit,
+          link: linkHref,
+          hasImage,
+          imageUrl,
+          isFloodRelated,
+          anonymizedAuthor,
+        });
+      }
+    } catch (_e) {
+      // Skip failed feed
+    }
+  }
+
+  // Sort by date descending, flood-related first
+  allPosts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const floodPosts = allPosts.filter(p => p.isFloodRelated);
+  const nonFloodPosts = allPosts.filter(p => !p.isFloodRelated);
+  const sorted = [...floodPosts, ...nonFloodPosts];
+
+  return {
+    posts: sorted,
+    lastUpdated: new Date().toISOString(),
+    floodPostCount: floodPosts.length,
+    totalPosts: sorted.length,
+  };
+}
+
 // --- Route Registration ---
 
 export async function registerRoutes(
@@ -1125,6 +1256,69 @@ export async function registerRoutes(
       return res.status(500).json({ error: err.message });
     }
   });
+
+  // V5: Webcam metadata
+  cachedRoute("/api/webcams", "webcams-meta", async () => {
+    const cameras = [
+      { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, imageUrl: "/api/webcams/nws", refreshInterval: 600 },
+      ...DOT_CAMERAS.map(c => ({
+        id: c.id,
+        name: c.name,
+        type: "dot" as const,
+        imageUrl: `/api/webcams/dot/${c.id}`,
+        refreshInterval: 120,
+      })),
+    ];
+    return { cameras };
+  }, 10 * 60 * 1000);
+
+  // V5: NWS webcam proxy
+  app.get("/api/webcams/nws", async (_req, res) => {
+    try {
+      const cached = getCached<Buffer>("nws-webcam-img", IMAGE_CACHE_TTL);
+      if (cached && !cached.stale) {
+        res.set("Content-Type", "image/jpeg");
+        return res.send(cached.data);
+      }
+      const imgRes = await fetch("https://www.weather.gov/images/bgm/southview.jpg", {
+        headers: { "User-Agent": USER_AGENT },
+      });
+      if (!imgRes.ok) throw new Error(`NWS webcam returned ${imgRes.status}`);
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      setCache("nws-webcam-img", buf);
+      res.set("Content-Type", "image/jpeg");
+      return res.send(buf);
+    } catch (err: any) {
+      return res.status(502).json({ error: err.message });
+    }
+  });
+
+  // V5: DOT camera frame extraction via ffmpeg
+  app.get("/api/webcams/dot/:cameraId", (req, res) => {
+    const cameraId = req.params.cameraId;
+    const cam = DOT_CAMERAS.find(c => c.id === cameraId);
+    if (!cam) return res.status(404).json({ error: "Unknown camera ID" });
+
+    // Check per-camera cache
+    const cached = getDotCamCached(cameraId);
+    if (cached) {
+      res.set("Content-Type", "image/jpeg");
+      return res.send(cached);
+    }
+
+    try {
+      const cmd = `ffmpeg -y -i "${cam.stream}" -frames:v 1 -q:v 3 -f image2pipe -vcodec mjpeg pipe:1`;
+      const buf = execSync(cmd, { timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
+      setDotCamCache(cameraId, buf);
+      res.set("Content-Type", "image/jpeg");
+      return res.send(buf);
+    } catch (err: any) {
+      return res.status(502).json({ error: `Camera frame extraction failed: ${err.message}` });
+    }
+  });
+
+  // V5: Community feed (Reddit RSS)
+  cachedRoute("/api/community-feed", "community-feed", fetchCommunityFeed, 5 * 60 * 1000);
 
   app.get("/api/spc-images/:type", async (req, res) => {
     const type = req.params.type;
