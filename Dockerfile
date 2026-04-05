@@ -1,6 +1,11 @@
 FROM node:20-slim
 
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Python + GDAL for CPC soil moisture GeoTIFF extraction
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl python3 python3-pip gdal-bin python3-gdal libgdal-dev \
+    && python3 -m pip install --break-system-packages rasterio \
+    && apt-get purge -y libgdal-dev && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
