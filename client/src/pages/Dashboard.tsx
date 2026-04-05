@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -147,7 +147,7 @@ function KPICards({ gauges, weather }: { gauges: GaugeData[] | undefined; weathe
   );
 
   // Data freshness
-  const freshCount = onlineGauges.filter(g => freshnessMins(g.lastUpdated) < 30).length;
+  const freshCount = onlineGauges.filter(g => freshnessMins(g.lastUpdated) < 120).length;
 
   const kpis: Array<{ label: string; value: string; sub: string; icon: React.ReactNode; color: string }> = [
     {
@@ -215,7 +215,7 @@ function KPICards({ gauges, weather }: { gauges: GaugeData[] | undefined; weathe
 // === Gauge Card ===
 function GaugeCard({ gauge, expanded, onToggle }: { gauge: GaugeData; expanded: boolean; onToggle: () => void }) {
   const mins = freshnessMins(gauge.lastUpdated);
-  const freshnessColor = mins > 60 ? "text-red-500" : mins > 30 ? "text-orange-400" : "text-muted-foreground";
+  const freshnessColor = mins > 180 ? "text-red-500" : mins > 120 ? "text-orange-400" : "text-muted-foreground";
 
   if (gauge.isOffline) {
     return (
@@ -726,9 +726,19 @@ export default function Dashboard() {
   const [isDark, setIsDark] = useState(true);
   const [expandedGauge, setExpandedGauge] = useState<string | null>(null);
 
+  // Apply dark mode on mount
+  useEffect(() => {
+    document.documentElement.classList.add("dark");
+  }, []);
+
   const toggleDark = () => {
-    setIsDark(!isDark);
-    document.documentElement.classList.toggle("dark");
+    const next = !isDark;
+    setIsDark(next);
+    if (next) {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
   };
 
   const toggleGauge = (id: string) => {

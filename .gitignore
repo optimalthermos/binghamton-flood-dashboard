@@ -1,10 +1,5 @@
-node_modules
-dist
-.DS_Store
-server/public
-vite.config.ts.*
-*.tar.gz
-*.db
-*.db-shm
-*.db-wal
+node_modules/
+dist/
+data.db
 .env
+*.log
