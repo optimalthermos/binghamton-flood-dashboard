@@ -1,6 +1,7 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+const API_BASE = import.meta.env.VITE_API_BASE || "";
+export const apiUrl = (path: string) => `${API_BASE}${path}`;
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -29,8 +30,8 @@ export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
-  async ({ queryKey }) => {
-    const res = await fetch(`${API_BASE}${queryKey.join("/")}`);
+  async ({ queryKey, signal }) => {
+    const res = await fetch(`${API_BASE}${queryKey.join("/")}`, { signal });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;

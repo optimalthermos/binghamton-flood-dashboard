@@ -58,6 +58,7 @@ function PostItem({ post }: { post: CommunityPost }) {
               src={post.imageUrl}
               alt=""
               className="w-full h-full object-cover"
+              width="48" height="48" loading="lazy" decoding="async"
               onError={() => setImgError(true)}
             />
           </div>
@@ -109,7 +110,7 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
               )}
             </CardTitle>
             <CollapsibleTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
+              <Button aria-label={isOpen ? "Collapse community reports" : "Expand community reports"} variant="ghost" size="sm" className="h-7 w-7 p-0">
                 {isOpen ? (
                   <ChevronUp className="h-3.5 w-3.5" />
                 ) : (
