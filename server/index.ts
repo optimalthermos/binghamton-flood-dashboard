@@ -2,19 +2,9 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import compression from "compression";
 
 const app = express();
 const httpServer = createServer(app);
-app.disable("x-powered-by");
-app.use(compression());
-app.use((_req, res, next) => {
-  res.set("X-Content-Type-Options", "nosniff");
-  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  // Supports the isolated preview. These endpoints contain public data only.
-  res.set("Access-Control-Allow-Origin", "*");
-  next();
-});
 
 declare module "http" {
   interface IncomingMessage {

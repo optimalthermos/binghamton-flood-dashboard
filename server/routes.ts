@@ -1,9 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { activeAlerts, gaugeMetadata, officialThresholds, riverForecasts, weatherPoint } from "./monitoring";
-import { observationState, precipitationTotal } from "../shared/monitoring";
+import { execSync } from "child_process";
 import { createHash } from "crypto";
 import type {
   GaugeData, TimeSeriesPoint, ForecastData, WeatherData, EnsembleData,
@@ -11,8 +8,7 @@ import type {
   EnsembleBounds,
 } from "@shared/schema";
 
-const USER_AGENT = "(Floodwatch, https://github.com/optimalthermos/binghamton-flood-dashboard)";
-const execFileAsync = promisify(execFile);
+const USER_AGENT = "(binghamton-flood-dashboard, contact@example.com)";
 const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 const LONG_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const IMAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -199,17 +195,16 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
   const regularIds = regularGauges.map(g => g.id).join(",");
   const regularUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${regularIds}&parameterCd=00060,00065&period=P3D`;
 
-  const metadataPromise = Promise.allSettled(regularGauges.map(g => gaugeMetadata(g.id)));
-  const fetches: Promise<Response | null>[] = [fetchWithUA(regularUrl)];
+  const fetches: Promise<Response>[] = [fetchWithUA(regularUrl)];
   for (const rg of reservoirGauges) {
     const rUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${rg.id}&parameterCd=${rg.parameterCd}&period=P3D`;
-    fetches.push(fetchWithUA(rUrl).catch(() => null));
+    fetches.push(fetchWithUA(rUrl));
   }
 
   const responses = await Promise.all(fetches);
 
   const regularRes = responses[0];
-  if (!regularRes?.ok) throw new Error(`USGS API returned ${regularRes?.status || "no response"}`);
+  if (!regularRes.ok) throw new Error(`USGS API returned ${regularRes.status}`);
   const regularData = await regularRes.json();
   const regularTS = regularData?.value?.timeSeries || [];
 
@@ -234,7 +229,7 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
   for (let i = 0; i < reservoirGauges.length; i++) {
     const rg = reservoirGauges[i];
     const rRes = responses[i + 1];
-    if (!rRes?.ok) continue;
+    if (!rRes.ok) continue;
 
     try {
       const rData = await rRes.json();
@@ -252,7 +247,6 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     } catch { /* reservoir data optional */ }
   }
 
-  const metadata = await metadataPromise;
   const allGauges: GaugeData[] = GAUGE_CONFIG.map(config => {
     const gd = gaugeMap[config.id];
 
@@ -281,8 +275,7 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
         isReservoir: true,
         poolElevation: poolElev,
         conservationPool: conserv,
-        // Elevation is not volume; do not label a linear stage ratio as storage.
-        floodStoragePct: null,
+        floodStoragePct: pct,
         recessionRate: rate,
         recessionPhase: phase,
       };
@@ -292,10 +285,8 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     const flowTS = gd?.flowTS || [];
     const lastStage = stageTS.filter(p => p.value !== null).slice(-1)[0];
     const lastFlow = flowTS.filter(p => p.value !== null).slice(-1)[0];
-    const isOffline = !lastStage && !lastFlow;
+    const isOffline = !gd || (stageTS.length === 0 && flowTS.length === 0);
     const { rate, phase } = computeRecessionRate(stageTS);
-    const result = metadata[regularGauges.findIndex(g => g.id === config.id)];
-    const meta = result?.status === "fulfilled" ? result.value : null;
 
     return {
       id: config.id,
@@ -307,9 +298,9 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
       flowTimeSeries: flowTS,
       lastUpdated: lastStage?.timestamp || lastFlow?.timestamp || null,
       trend: computeTrend(stageTS),
-      thresholds: officialThresholds(meta),
+      thresholds: config.thresholds,
       isBinghamton: config.isBinghamton || false,
-      isOffline,
+      isOffline: isOffline || (config.isBinghamton === true),
       isReservoir: false,
       recessionRate: rate,
       recessionPhase: phase,
@@ -356,7 +347,6 @@ async function fetchForecast(): Promise<ForecastData> {
 
   const afdText = afdRes.ok ? await afdRes.text() : "";
   const rvaText = rvaRes.ok ? await rvaRes.text() : "";
-  if (!afdRes.ok || !afdText.includes("Forecast Discussion")) throw new Error("NWS forecast discussion unavailable");
 
   const cleanAfd = afdText.replace(/<[^>]*>/g, "").trim();
   // FIX: Remove script tags and their content BEFORE stripping other HTML tags
@@ -411,8 +401,7 @@ function computeFrostData(forecastPeriods: WeatherData["forecast"]): FrostData {
 
 async function fetchQPF(): Promise<QPFData | null> {
   try {
-    const point = await weatherPoint();
-    const hourlyRes = await fetchWithUA(point.forecastHourly);
+    const hourlyRes = await fetchWithUA("https://api.weather.gov/gridpoints/BGM/34,60/forecast/hourly");
     if (hourlyRes.ok) {
       const hourlyData = await hourlyRes.json();
       const periods = hourlyData?.properties?.periods || [];
@@ -440,16 +429,12 @@ async function fetchQPF(): Promise<QPFData | null> {
 }
 
 async function fetchWeather(): Promise<WeatherData> {
-  const point = await weatherPoint();
   const [obsRes, fcstRes, qpf] = await Promise.all([
     fetchWithUA("https://api.weather.gov/stations/KBGM/observations/latest"),
-    fetchWithUA(point.forecast),
+    fetchWithUA("https://api.weather.gov/gridpoints/BGM/34,60/forecast"),
     fetchQPF(),
   ]);
 
-  if (!obsRes.ok || !fcstRes.ok) throw new Error(`NWS weather unavailable (${obsRes.status}/${fcstRes.status})`);
-  let observedAt: string | null = null;
-  let forecastIssuedAt: string | null = null;
   let current: WeatherData["current"] = {
     temp: null, windSpeed: null, windDir: null,
     conditions: null, humidity: null, pressure: null,
@@ -458,7 +443,6 @@ async function fetchWeather(): Promise<WeatherData> {
   if (obsRes.ok) {
     const obs = await obsRes.json();
     const props = obs?.properties;
-    observedAt = props?.timestamp || null;
     if (props) {
       const tempC = props.temperature?.value;
       current = {
@@ -475,7 +459,6 @@ async function fetchWeather(): Promise<WeatherData> {
   let forecast: WeatherData["forecast"] = [];
   if (fcstRes.ok) {
     const fcst = await fcstRes.json();
-    forecastIssuedAt = fcst?.properties?.updateTime || null;
     forecast = (fcst?.properties?.periods || []).slice(0, 14).map((p: any) => ({
       name: p.name,
       temp: p.temperature,
@@ -501,8 +484,7 @@ async function fetchWeather(): Promise<WeatherData> {
     }
   }
 
-  return { current, forecast, qpf: qpfResult || null, observedAt, forecastIssuedAt,
-    stale: observationState(observedAt) !== "current" } as WeatherData;
+  return { current, forecast, frostData, qpf: qpfResult || null };
 }
 
 // --- Ensemble ---
@@ -685,8 +667,7 @@ function parseGridpointTimeline(rawValues: any[], convertFn?: (v: number) => num
 }
 
 async function fetchGridpointData() {
-  const point = await weatherPoint();
-  const res = await fetchWithUA(point.forecastGridData);
+  const res = await fetchWithUA("https://api.weather.gov/gridpoints/BGM/66,57");
   if (!res.ok) throw new Error(`NWS gridpoint returned ${res.status}`);
   const data = await res.json();
   const p = data?.properties;
@@ -727,15 +708,7 @@ async function fetchGridpointData() {
     }
   }
 
-  return { temperatureTimeline: tempTimeline, dewpointTimeline: dewTimeline, qpfTimeline, snowTimeline, windTimeline, rainSnowTransition,
-    issuedAt: p?.updateTime || null,
-    stale: !p?.updateTime || Date.now() - Date.parse(p.updateTime) > 24 * 3600_000,
-    precipitation: {
-      next24h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 24),
-      next48h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 48),
-      next72h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 72),
-    },
-  };
+  return { temperatureTimeline: tempTimeline, dewpointTimeline: dewTimeline, qpfTimeline, snowTimeline, windTimeline, rainSnowTransition };
 }
 
 async function fetchHistoricalStats() {
@@ -788,7 +761,7 @@ async function fetchHistoricalStats() {
 
 async function fetchSoilMoisture() {
   try {
-    const { stdout: result } = await execFileAsync("python3", ["server/extract-soil-moisture.py"], {
+    const result = execSync("python3 server/extract-soil-moisture.py", {
       timeout: 30000,
       cwd: process.cwd(),
     });
@@ -1142,7 +1115,7 @@ async function fetchCommunityFeed() {
     "https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=flood+flooding+river+storm+binghamton&restrict_sr=on&sort=new&t=month&limit=10",
   ];
 
-  const FLOOD_KEYWORDS = /\b(flood(?:ing|ed)?|river|water level|storm|road closed|flood warning|evacuat(?:e|ion)|dam)\b/i;
+  const FLOOD_KEYWORDS = /flood|river|water level|storm|road closed|warning|emergency|evacuate|dam/i;
   const IMAGE_SOURCES = /i\.redd\.it|preview\.redd\.it|imgur|\.(jpg|jpeg|png)/i;
 
   function extractTagText(xml: string, tag: string): string {
@@ -1178,15 +1151,12 @@ async function fetchCommunityFeed() {
   }> = [];
 
   const seenLinks = new Set<string>();
-  let successfulFeeds = 0;
 
   for (const rssUrl of RSS_URLS) {
     try {
       const res = await fetchWithUA(rssUrl, 12000);
       if (!res.ok) continue;
       const xml = await res.text();
-      if (!xml.includes("<feed")) continue;
-      successfulFeeds++;
 
       // Split into <entry> blocks
       const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
@@ -1226,7 +1196,6 @@ async function fetchCommunityFeed() {
   }
 
   // Sort by date descending, flood-related first
-  if (!successfulFeeds) throw new Error("Community feeds unavailable");
   allPosts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const floodPosts = allPosts.filter(p => p.isFloodRelated);
@@ -1238,7 +1207,6 @@ async function fetchCommunityFeed() {
     lastUpdated: new Date().toISOString(),
     floodPostCount: floodPosts.length,
     totalPosts: sorted.length,
-    stale: successfulFeeds < RSS_URLS.length,
   };
 }
 
@@ -1250,29 +1218,22 @@ export async function registerRoutes(
 ): Promise<Server> {
 
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", version: "4.0.0", timestamp: new Date().toISOString() });
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
   // Helper for standard cached route
-  const inFlight = new Map<string, Promise<any>>();
   function cachedRoute<T>(path: string, cacheKey: string, fetcher: () => Promise<T>, ttl = CACHE_TTL) {
     app.get(path, async (_req, res) => {
       try {
         const cached = getCached<T>(cacheKey, ttl);
-        res.set("Cache-Control", "no-store");
-        if (cached && !cached.stale) return res.json({ ...cached.data as any, retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
-        if (!inFlight.has(cacheKey)) {
-          const task = fetcher().then(data => { setCache(cacheKey, data); return data; })
-            .finally(() => inFlight.delete(cacheKey));
-          inFlight.set(cacheKey, task);
-        }
-        const data = await inFlight.get(cacheKey);
-        return res.json({ ...data, retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
+        if (cached && !cached.stale) return res.json(cached.data);
+        const data = await fetcher();
+        setCache(cacheKey, data);
+        return res.json(data);
       } catch (err: any) {
         const cached = getCached<T>(cacheKey, ttl);
-        if (cached) return res.json({ ...cached.data as any, stale: true, error: err.message,
-          retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
-        return res.status(502).json({ error: err.message, stale: true });
+        if (cached) return res.json({ ...cached.data as any, stale: true, error: err.message });
+        return res.status(500).json({ error: err.message });
       }
     });
   }
@@ -1280,15 +1241,14 @@ export async function registerRoutes(
   cachedRoute("/api/gauges", "gauges", fetchGaugeData);
   cachedRoute("/api/forecast", "forecast", fetchForecast);
   cachedRoute("/api/weather", "weather", fetchWeather);
-  app.get("/api/ensemble", (_req, res) => res.status(503).json({ error: "Unverified ensemble parser retired. Use official river forecasts.", stale: true }));
-  cachedRoute("/api/news", "news", activeAlerts);
-  cachedRoute("/api/river-forecasts", "river-forecasts", riverForecasts, 5 * 60 * 1000);
+  cachedRoute("/api/ensemble", "ensemble", fetchEnsemble);
+  cachedRoute("/api/news", "news", fetchNews);
   cachedRoute("/api/groundwater", "groundwater", fetchGroundwater);
   cachedRoute("/api/surface-obs", "surface-obs", fetchSurfaceObs);
   cachedRoute("/api/gridpoint-data", "gridpoint-data", fetchGridpointData, 10 * 60 * 1000);
   cachedRoute("/api/historical-stats", "historical-stats", fetchHistoricalStats, LONG_CACHE_TTL);
   cachedRoute("/api/soil-moisture", "soil-moisture", fetchSoilMoisture, LONG_CACHE_TTL);
-  app.get("/api/predictive-outlook", (_req, res) => res.status(503).json({ error: "Unvalidated risk scores retired. Use official NWS alerts and forecasts.", stale: true }));
+  cachedRoute("/api/predictive-outlook", "predictive-outlook", fetchPredictiveOutlook, 5 * 60 * 1000);
 
   // Image proxy endpoints
   app.get("/api/radar-image", async (_req, res) => {
@@ -1298,8 +1258,8 @@ export async function registerRoutes(
         res.set("Content-Type", "image/png");
         return res.send(cached.data);
       }
-      const imgRes = await fetchWithUA(
-        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q-900913&SRS=EPSG:4326&BBOX=-76.8,41.3,-74.8,42.8&WIDTH=600&HEIGHT=400&FORMAT=image/png&TRANSPARENT=TRUE"
+      const imgRes = await fetch(
+        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q-900913&SRS=EPSG:4326&BBOX=41.3,-76.8,42.8,-74.8&WIDTH=600&HEIGHT=400&FORMAT=image/png&TRANSPARENT=TRUE"
       );
       if (!imgRes.ok) throw new Error(`Radar returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
@@ -1347,13 +1307,18 @@ export async function registerRoutes(
     }
 
     try {
-      const imgRes = await fetchWithUA(sourceUrl, 12000);
+      const imgRes = await fetch(sourceUrl, { headers: { "User-Agent": USER_AGENT } });
       if (!imgRes.ok) throw new Error(`USGS camera returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
       usgsCamCache[location] = { buf, timestamp: Date.now() };
       res.set("Content-Type", "image/jpeg");
       return res.send(buf);
     } catch (err: any) {
+      // Return stale cache if available
+      if (cached) {
+        res.set("Content-Type", "image/jpeg");
+        return res.send(cached.buf);
+      }
       return res.status(502).json({ error: err.message });
     }
   });
@@ -1361,13 +1326,10 @@ export async function registerRoutes(
   // V6: Mesonet/Ventusky webcam proxy (hourly image, try current hour then fallback to previous)
   app.get("/api/webcams/mesonet/:station", async (req, res) => {
     const station = req.params.station;
-    if (station !== "bing") return res.status(404).json({ error: "Unknown camera station" });
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
     const hour = now.getUTCHours().toString().padStart(2, "0");
-    const previous = new Date(now.getTime() - 3600_000);
-    const prevDate = previous.toISOString().slice(0, 10).replace(/-/g, "");
-    const prevHour = previous.getUTCHours().toString().padStart(2, "0");
+    const prevHour = ((now.getUTCHours() - 1 + 24) % 24).toString().padStart(2, "0");
     const cacheKey = `mesonet-${station}-${dateStr}${hour}`;
 
     const cached = mesonetCamCache[cacheKey];
@@ -1378,17 +1340,14 @@ export async function registerRoutes(
 
     const urls = [
       `https://webcams.ventusky.com/data/91/332236991/hour/${dateStr}_${hour}00.jpg`,
-      `https://webcams.ventusky.com/data/91/332236991/hour/${prevDate}_${prevHour}00.jpg`,
+      `https://webcams.ventusky.com/data/91/332236991/hour/${dateStr}_${prevHour}00.jpg`,
     ];
 
     for (const url of urls) {
       try {
-        const imgRes = await fetchWithUA(url, 8000);
+        const imgRes = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
         if (!imgRes.ok) continue;
         const buf = Buffer.from(await imgRes.arrayBuffer());
-        for (const key of Object.keys(mesonetCamCache)) {
-          if (Date.now() - mesonetCamCache[key].timestamp > USGS_CAM_CACHE_TTL) delete mesonetCamCache[key];
-        }
         mesonetCamCache[cacheKey] = { buf, timestamp: Date.now() };
         res.set("Content-Type", "image/jpeg");
         return res.send(buf);
@@ -1396,7 +1355,7 @@ export async function registerRoutes(
     }
 
     // Return stale cache if available (any key for this station)
-    const staleKey = Object.keys(mesonetCamCache).find(k => k.startsWith(`mesonet-${station}-`) && Date.now() - mesonetCamCache[k].timestamp < USGS_CAM_CACHE_TTL);
+    const staleKey = Object.keys(mesonetCamCache).find(k => k.startsWith(`mesonet-${station}-`));
     if (staleKey) {
       res.set("Content-Type", "image/jpeg");
       return res.send(mesonetCamCache[staleKey].buf);
@@ -1412,7 +1371,9 @@ export async function registerRoutes(
         res.set("Content-Type", "image/jpeg");
         return res.send(cached.data);
       }
-      const imgRes = await fetchWithUA("https://www.weather.gov/images/bgm/southview.jpg", 12000);
+      const imgRes = await fetch("https://www.weather.gov/images/bgm/southview.jpg", {
+        headers: { "User-Agent": USER_AGENT },
+      });
       if (!imgRes.ok) throw new Error(`NWS webcam returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
       setCache("nws-webcam-img", buf);
@@ -1424,7 +1385,7 @@ export async function registerRoutes(
   });
 
   // V5: DOT camera frame extraction via ffmpeg
-  app.get("/api/webcams/dot/:cameraId", async (req, res) => {
+  app.get("/api/webcams/dot/:cameraId", (req, res) => {
     const cameraId = req.params.cameraId;
     const cam = DOT_CAMERAS.find(c => c.id === cameraId);
     if (!cam) return res.status(404).json({ error: "Unknown camera ID" });
@@ -1437,9 +1398,8 @@ export async function registerRoutes(
     }
 
     try {
-      const { stdout: buf } = await execFileAsync("ffmpeg",
-        ["-loglevel", "error", "-i", cam.stream, "-frames:v", "1", "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-        { timeout: 10000, maxBuffer: 5 * 1024 * 1024, encoding: "buffer" });
+      const cmd = `ffmpeg -y -i "${cam.stream}" -frames:v 1 -q:v 3 -f image2pipe -vcodec mjpeg pipe:1`;
+      const buf = execSync(cmd, { timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
       setDotCamCache(cameraId, buf);
       res.set("Content-Type", "image/jpeg");
       return res.send(buf);
@@ -1467,7 +1427,7 @@ export async function registerRoutes(
         res.set("Content-Type", "image/gif");
         return res.send(cached.data);
       }
-      const imgRes = await fetchWithUA(url, 12000);
+      const imgRes = await fetch(url);
       if (!imgRes.ok) throw new Error(`SPC returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
       setCache(cacheKey, buf);

@@ -1,9 +1,0 @@
-# Binghamton Floodwatch
-> Independent Binghamton basin monitoring. Not an official warning service.
-
-- [Dashboard](https://binghamton-flood-dashboard-production.up.railway.app/): River observations, official forecasts, alerts, cameras, community reports and source freshness.
-- [NWS Binghamton](https://www.weather.gov/bgm/): Official weather and safety guidance.
-- [NOAA NWPS](https://water.noaa.gov/wfo/bgm): Official river forecasts and basin map.
-- [USGS](https://waterservices.usgs.gov/): River observations.
-
-Never treat an unavailable or stale feed as evidence of safety. Gauge stages use local datums. Point precipitation forecasts are not basin averages. Camera retrieval time is not capture time.

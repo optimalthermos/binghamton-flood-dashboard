@@ -10,14 +10,10 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use("/assets", express.static(path.join(distPath, "assets"), { maxAge: "1y", immutable: true }));
-  app.use(express.static(distPath, { maxAge: "5m", index: false }));
+  app.use(express.static(distPath));
 
   // fall through to index.html if the file doesn't exist
-  app.get("/", (_req, res) => {
-    res.set("Cache-Control", "no-cache").sendFile(path.resolve(distPath, "index.html"));
-  });
   app.use("/{*path}", (_req, res) => {
-    res.status(404).type("text").send("Page not found. Return to / for Floodwatch.");
+    res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
