@@ -155,7 +155,7 @@ function KPICards({ gaugesResp, weather, outlookData }: { gaugesResp: GaugesResp
 
   // Basin trend (v2: discharge-weighted from backend)
   const bt = gaugesResp?.basinTrend;
-  const btDirection = bt?.direction || "Stable";
+  const btDirection = bt?.direction || "N/A";
   const btColor = btDirection === "Loading" ? "text-red-400" : btDirection === "Draining" ? "text-emerald-400" : "text-blue-400";
   const btIcon = btDirection === "Loading" ? <TrendingUp className="h-5 w-5" /> : btDirection === "Draining" ? <TrendingDown className="h-5 w-5" /> : <Minus className="h-5 w-5" />;
 
@@ -164,8 +164,8 @@ function KPICards({ gaugesResp, weather, outlookData }: { gaugesResp: GaugesResp
 
   // QPF (v2: countdown + amount)
   const qpf = weather?.qpf;
-  let qpfValue = "None";
-  let qpfSub = "No precip in forecast";
+  let qpfValue = weather ? "None" : "N/A";
+  let qpfSub = weather ? "No precip in forecast" : "Forecast unavailable";
   let qpfColor = "text-muted-foreground";
   if (qpf) {
     if (qpf.hoursUntil >= 0) {
@@ -194,8 +194,8 @@ function KPICards({ gaugesResp, weather, outlookData }: { gaugesResp: GaugesResp
   const kpis: Array<{ label: string; value: string; sub: string; icon: React.ReactNode; color: string }> = [
     {
       label: "Highest Stage",
-      value: `${Math.round(highestPct.pct)}%`,
-      sub: `${highestPct.name} (${highestPct.stage?.toFixed(1)}/${highestPct.action}ft)`,
+      value: highestPct.action ? `${Math.round(highestPct.pct)}%` : "N/A",
+      sub: highestPct.action ? `${highestPct.name} (${highestPct.stage?.toFixed(1)}/${highestPct.action}ft)` : "No usable stage reading",
       icon: <Activity className="h-5 w-5" />,
       color: highestPct.pct >= 100 ? "text-red-500" : highestPct.pct >= 80 ? "text-amber-400" : "text-emerald-400",
     },
@@ -222,15 +222,15 @@ function KPICards({ gaugesResp, weather, outlookData }: { gaugesResp: GaugesResp
     },
     {
       label: "Frost Depth",
-      value: frost ? `${frost.estimatedDepthInches.toFixed(1)}"` : "0\"",
-      sub: frost ? `FDH: ${frost.cumulativeFDH} — ${frostSig}` : "No freeze",
+      value: frost ? `${frost.estimatedDepthInches.toFixed(1)}"` : "N/A",
+      sub: frost ? `FDH: ${frost.cumulativeFDH} — ${frostSig}` : "Estimate unavailable",
       icon: <Snowflake className="h-5 w-5" />,
       color: frostSig === "HYDROLOGIC" ? "text-red-400" : frostSig === "NUISANCE" ? "text-amber-400" : "text-muted-foreground",
     },
     {
       label: "Data Fresh",
-      value: `${freshCount}/${onlineGauges.length}`,
-      sub: `${onlineGauges.length - freshCount} stale gauge(s)`,
+      value: onlineGauges.length ? `${freshCount}/${onlineGauges.length}` : "N/A",
+      sub: onlineGauges.length ? `${onlineGauges.length - freshCount} stale gauge(s)` : "No current gauge data",
       icon: <Wifi className="h-5 w-5" />,
       color: freshCount === onlineGauges.length ? "text-emerald-400" : "text-amber-400",
     },
