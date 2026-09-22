@@ -1,6 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { execSync } from "child_process";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles } from "./monitoring";
+import { observationState, precipitationTotal } from "../shared/monitoring";
 import { createHash } from "crypto";
 import type {
   GaugeData, TimeSeriesPoint, ForecastData, WeatherData, EnsembleData,
@@ -8,7 +11,8 @@ import type {
   EnsembleBounds,
 } from "@shared/schema";
 
-const USER_AGENT = "(binghamton-flood-dashboard, contact@example.com)";
+const USER_AGENT = "(Floodwatch, https://github.com/optimalthermos/binghamton-flood-dashboard)";
+const execFileAsync = promisify(execFile);
 const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 const LONG_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const IMAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -20,6 +24,15 @@ interface CacheEntry<T> {
 }
 
 const cache: Record<string, CacheEntry<any>> = {};
+const sourceRequests = new Map<string, Promise<any>>();
+async function loadSource<T>(key: string, fetcher: () => Promise<T>, ttl = CACHE_TTL): Promise<T> {
+  const hit = getCached<T>(key, ttl);
+  if (hit && !hit.stale) return hit.data;
+  if (!sourceRequests.has(key)) {
+    sourceRequests.set(key, fetcher().then(data => { setCache(key, data); return data; }).finally(() => sourceRequests.delete(key)));
+  }
+  return sourceRequests.get(key)!;
+}
 
 function getCached<T>(key: string, ttl = CACHE_TTL): { data: T; stale: boolean } | null {
   const entry = cache[key];
@@ -195,17 +208,17 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
   const regularIds = regularGauges.map(g => g.id).join(",");
   const regularUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${regularIds}&parameterCd=00060,00065&period=P3D`;
 
-  const fetches: Promise<Response>[] = [fetchWithUA(regularUrl)];
+  const metadataPromise = Promise.allSettled(regularGauges.map(g => gaugeMetadata(g.id)));
+  const fetches: Promise<Response | null>[] = [fetchWithUA(regularUrl).catch(() => null)];
   for (const rg of reservoirGauges) {
     const rUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${rg.id}&parameterCd=${rg.parameterCd}&period=P3D`;
-    fetches.push(fetchWithUA(rUrl));
+    fetches.push(fetchWithUA(rUrl).catch(() => null));
   }
 
   const responses = await Promise.all(fetches);
 
   const regularRes = responses[0];
-  if (!regularRes.ok) throw new Error(`USGS API returned ${regularRes.status}`);
-  const regularData = await regularRes.json();
+  const regularData = regularRes?.ok ? await regularRes.json() : null;
   const regularTS = regularData?.value?.timeSeries || [];
 
   const gaugeMap: Record<string, { stageTS: TimeSeriesPoint[]; flowTS: TimeSeriesPoint[]; elevTS: TimeSeriesPoint[] }> = {};
@@ -229,7 +242,7 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
   for (let i = 0; i < reservoirGauges.length; i++) {
     const rg = reservoirGauges[i];
     const rRes = responses[i + 1];
-    if (!rRes.ok) continue;
+    if (!rRes?.ok) continue;
 
     try {
       const rData = await rRes.json();
@@ -247,6 +260,26 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     } catch { /* reservoir data optional */ }
   }
 
+  // USGS outages must not blank every station. Use official NWPS observations
+  // only for missing series; retain their original timestamps and unit metadata.
+  const fallbackSites = new Set<string>();
+  await Promise.allSettled(GAUGE_CONFIG.filter(config => {
+    const series = config.isReservoir ? gaugeMap[config.id]?.elevTS : gaugeMap[config.id]?.stageTS;
+    return !series?.some(p => p.value !== null && Number.isFinite(p.value));
+  }).map(async config => {
+    const observed = await officialObservations(config.id);
+    if (!observed.stageTS.some((p: any) => p.value !== null)) return;
+    fallbackSites.add(config.id);
+    gaugeMap[config.id] = {
+      stageTS: config.isReservoir ? [] : observed.stageTS,
+      elevTS: config.isReservoir ? observed.stageTS : [],
+      flowTS: observed.flowTS,
+    };
+  }));
+  if (!Object.values(gaugeMap).some(g => [...g.stageTS, ...g.elevTS].some(p => p.value !== null))) {
+    throw new Error("USGS and NOAA river observations are unavailable");
+  }
+  const metadata = await metadataPromise;
   const allGauges: GaugeData[] = GAUGE_CONFIG.map(config => {
     const gd = gaugeMap[config.id];
 
@@ -261,6 +294,7 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
 
       return {
         id: config.id,
+        source: fallbackSites.has(config.id) ? "NOAA NWPS" : "USGS",
         name: config.name,
         river: config.river,
         stage: poolElev,
@@ -275,7 +309,10 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
         isReservoir: true,
         poolElevation: poolElev,
         conservationPool: conserv,
-        floodStoragePct: pct,
+        // Elevation is not volume; do not label a linear stage ratio as storage.
+        floodStoragePct: null,
+        poolRangePct: pct,
+        floodPool: flood,
         recessionRate: rate,
         recessionPhase: phase,
       };
@@ -285,11 +322,14 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     const flowTS = gd?.flowTS || [];
     const lastStage = stageTS.filter(p => p.value !== null).slice(-1)[0];
     const lastFlow = flowTS.filter(p => p.value !== null).slice(-1)[0];
-    const isOffline = !gd || (stageTS.length === 0 && flowTS.length === 0);
+    const isOffline = !lastStage && !lastFlow;
     const { rate, phase } = computeRecessionRate(stageTS);
+    const result = metadata[regularGauges.findIndex(g => g.id === config.id)];
+    const meta = result?.status === "fulfilled" ? result.value : null;
 
     return {
       id: config.id,
+      source: fallbackSites.has(config.id) ? "NOAA NWPS" : "USGS",
       name: config.name,
       river: config.river,
       stage: lastStage?.value ?? null,
@@ -298,9 +338,9 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
       flowTimeSeries: flowTS,
       lastUpdated: lastStage?.timestamp || lastFlow?.timestamp || null,
       trend: computeTrend(stageTS),
-      thresholds: config.thresholds,
+      thresholds: officialThresholds(meta),
       isBinghamton: config.isBinghamton || false,
-      isOffline: isOffline || (config.isBinghamton === true),
+      isOffline,
       isReservoir: false,
       recessionRate: rate,
       recessionPhase: phase,
@@ -310,7 +350,8 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
   const confluenceSync = computeConfluenceSync(allGauges);
   const basinTrend = computeBasinTrend(allGauges);
 
-  return { gauges: allGauges, confluenceSync, basinTrend };
+  return { gauges: allGauges, confluenceSync, basinTrend,
+    warning: fallbackSites.size ? `USGS data gaps: ${fallbackSites.size} station(s) are using official NOAA observations.` : null } as GaugesResponse;
 }
 
 // --- AFD Parsing ---
@@ -347,6 +388,7 @@ async function fetchForecast(): Promise<ForecastData> {
 
   const afdText = afdRes.ok ? await afdRes.text() : "";
   const rvaText = rvaRes.ok ? await rvaRes.text() : "";
+  if (!afdRes.ok || !afdText.includes("Forecast Discussion")) throw new Error("NWS forecast discussion unavailable");
 
   const cleanAfd = afdText.replace(/<[^>]*>/g, "").trim();
   // FIX: Remove script tags and their content BEFORE stripping other HTML tags
@@ -401,7 +443,8 @@ function computeFrostData(forecastPeriods: WeatherData["forecast"]): FrostData {
 
 async function fetchQPF(): Promise<QPFData | null> {
   try {
-    const hourlyRes = await fetchWithUA("https://api.weather.gov/gridpoints/BGM/34,60/forecast/hourly");
+    const point = await weatherPoint();
+    const hourlyRes = await fetchWithUA(point.forecastHourly);
     if (hourlyRes.ok) {
       const hourlyData = await hourlyRes.json();
       const periods = hourlyData?.properties?.periods || [];
@@ -429,12 +472,16 @@ async function fetchQPF(): Promise<QPFData | null> {
 }
 
 async function fetchWeather(): Promise<WeatherData> {
+  const point = await weatherPoint();
   const [obsRes, fcstRes, qpf] = await Promise.all([
     fetchWithUA("https://api.weather.gov/stations/KBGM/observations/latest"),
-    fetchWithUA("https://api.weather.gov/gridpoints/BGM/34,60/forecast"),
+    fetchWithUA(point.forecast),
     fetchQPF(),
   ]);
 
+  if (!obsRes.ok || !fcstRes.ok) throw new Error(`NWS weather unavailable (${obsRes.status}/${fcstRes.status})`);
+  let observedAt: string | null = null;
+  let forecastIssuedAt: string | null = null;
   let current: WeatherData["current"] = {
     temp: null, windSpeed: null, windDir: null,
     conditions: null, humidity: null, pressure: null,
@@ -443,6 +490,7 @@ async function fetchWeather(): Promise<WeatherData> {
   if (obsRes.ok) {
     const obs = await obsRes.json();
     const props = obs?.properties;
+    observedAt = props?.timestamp || null;
     if (props) {
       const tempC = props.temperature?.value;
       current = {
@@ -459,6 +507,7 @@ async function fetchWeather(): Promise<WeatherData> {
   let forecast: WeatherData["forecast"] = [];
   if (fcstRes.ok) {
     const fcst = await fcstRes.json();
+    forecastIssuedAt = fcst?.properties?.updateTime || null;
     forecast = (fcst?.properties?.periods || []).slice(0, 14).map((p: any) => ({
       name: p.name,
       temp: p.temperature,
@@ -484,7 +533,8 @@ async function fetchWeather(): Promise<WeatherData> {
     }
   }
 
-  return { current, forecast, frostData, qpf: qpfResult || null };
+  return { current, forecast, frostData, qpf: qpfResult || null, observedAt, forecastIssuedAt,
+    stale: observationState(observedAt) !== "current" } as WeatherData;
 }
 
 // --- Ensemble ---
@@ -667,7 +717,8 @@ function parseGridpointTimeline(rawValues: any[], convertFn?: (v: number) => num
 }
 
 async function fetchGridpointData() {
-  const res = await fetchWithUA("https://api.weather.gov/gridpoints/BGM/66,57");
+  const point = await weatherPoint();
+  const res = await fetchWithUA(point.forecastGridData);
   if (!res.ok) throw new Error(`NWS gridpoint returned ${res.status}`);
   const data = await res.json();
   const p = data?.properties;
@@ -708,7 +759,15 @@ async function fetchGridpointData() {
     }
   }
 
-  return { temperatureTimeline: tempTimeline, dewpointTimeline: dewTimeline, qpfTimeline, snowTimeline, windTimeline, rainSnowTransition };
+  return { temperatureTimeline: tempTimeline, dewpointTimeline: dewTimeline, qpfTimeline, snowTimeline, windTimeline, rainSnowTransition,
+    issuedAt: p?.updateTime || null,
+    stale: !p?.updateTime || Date.now() - Date.parse(p.updateTime) > 24 * 3600_000,
+    precipitation: {
+      next24h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 24),
+      next48h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 48),
+      next72h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 72),
+    },
+  };
 }
 
 async function fetchHistoricalStats() {
@@ -761,7 +820,7 @@ async function fetchHistoricalStats() {
 
 async function fetchSoilMoisture() {
   try {
-    const result = execSync("python3 server/extract-soil-moisture.py", {
+    const { stdout: result } = await execFileAsync("python3", ["server/extract-soil-moisture.py"], {
       timeout: 30000,
       cwd: process.cwd(),
     });
@@ -789,7 +848,7 @@ const HISTORICAL_FLOODS = [
     description: "Remnants of Lee stalled over basin. 10-15\" rain over 3 days on already-saturated ground from Hurricane Irene 2 weeks prior.",
     triggers: { qpf48: 8, soilMoisturePct: 95, gwDepth: 1, conklinStage: 15, allRising: true },
     severity: "CATASTROPHIC",
-    conklinPeak: 22.26,
+    conklinPeak: 23.94,
     vestalPeak: 32.67,
   },
   {
@@ -797,7 +856,7 @@ const HISTORICAL_FLOODS = [
     description: "Stalled frontal boundary with tropical moisture. 8-13\" over 3-4 days. Ground saturated from wet spring.",
     triggers: { qpf48: 6, soilMoisturePct: 85, gwDepth: 2, conklinStage: 12, allRising: true },
     severity: "MAJOR",
-    conklinPeak: 19.61,
+    conklinPeak: 25.02,
     vestalPeak: 28.13,
   },
   {
@@ -828,10 +887,10 @@ function scoreToRiskLevel(score: number): string {
 async function fetchPredictiveOutlook() {
   // Fetch all upstream data, degrading gracefully on failures
   const [gaugeResult, gridpointResult, soilMoistureResult, groundwaterResult] = await Promise.allSettled([
-    fetchGaugeData(),
-    fetchGridpointData(),
-    fetchSoilMoisture(),
-    fetchGroundwater(),
+    loadSource("gauges", fetchGaugeData),
+    loadSource("gridpoint-data", fetchGridpointData, 10 * 60 * 1000),
+    loadSource("soil-moisture", fetchSoilMoisture, LONG_CACHE_TTL),
+    loadSource("groundwater", fetchGroundwater),
   ]);
 
   const gaugeData = gaugeResult.status === "fulfilled" ? gaugeResult.value : null;
@@ -840,13 +899,16 @@ async function fetchPredictiveOutlook() {
   const groundwater = groundwaterResult.status === "fulfilled" ? groundwaterResult.value : null;
 
   const gauges = gaugeData?.gauges || [];
-  const regularGauges = gauges.filter(g => !g.isReservoir && !g.isOffline);
+  const regularGauges = gauges.filter(g => !g.isReservoir && observationState(g.lastUpdated, g.isOffline) === "current");
   const confluenceSync = gaugeData?.confluenceSync;
   const basinTrend = gaugeData?.basinTrend;
 
   // === FACTOR 1: Stage Proximity (weight 0.25) ===
-  const conklin = gauges.find(g => g.id === "01503000");
-  const conklinActionStage = 10;
+  const conklin = regularGauges.find(g => g.id === "01503000");
+  const conklinActionStage = conklin?.thresholds.action ?? 10;
+  if (!conklin || conklin.stage === null || !gridpoint || gridpoint.stale || gridpoint.precipitation.next48h.coverageHours < 47) {
+    throw new Error("Analysis requires current Conklin observations and a complete 48-hour precipitation forecast.");
+  }
   let stageScore = 0;
   let stageDetail = "No gauge data";
   if (conklin?.stage !== null && conklin?.stage !== undefined) {
@@ -875,11 +937,7 @@ async function fetchPredictiveOutlook() {
   let qpfDetail = "No QPF data";
   let qpf48Total = 0;
   if (gridpoint?.qpfTimeline) {
-    const now = Date.now();
-    const cutoff48h = now + 48 * 3600 * 1000;
-    qpf48Total = gridpoint.qpfTimeline
-      .filter(p => new Date(p.time).getTime() <= cutoff48h)
-      .reduce((sum, p) => sum + p.value, 0);
+    qpf48Total = gridpoint.precipitation.next48h.inches;
     if (qpf48Total <= 0) qpfScore = 0;
     else if (qpf48Total <= 0.5) qpfScore = 30;
     else if (qpf48Total <= 1) qpfScore = 50;
@@ -891,7 +949,7 @@ async function fetchPredictiveOutlook() {
   // === FACTOR 4: Soil Moisture (weight 0.10) ===
   let soilScore = 50;
   let soilDetail = "Unknown";
-  const soilPct = soilMoisture?.percentile ?? null;
+  const soilPct = soilMoisture?.date && Date.now() - Date.parse(soilMoisture.date) < 72 * 3600_000 ? soilMoisture.percentile : null;
   if (soilPct !== null) {
     soilScore = soilPct;
     soilDetail = `${soilPct.toFixed(0)}th percentile — ${soilMoisture?.interpretation || ""}`;
@@ -900,7 +958,7 @@ async function fetchPredictiveOutlook() {
   // === FACTOR 5: Groundwater Saturation (weight 0.10) ===
   let gwScore = 40;
   let gwDetail = "Unknown";
-  const gwDepth = groundwater?.depth ?? null;
+  const gwDepth = observationState(groundwater?.lastUpdated) === "current" ? groundwater?.depth ?? null : null;
   if (gwDepth !== null) {
     if (gwDepth < 2) gwScore = 100;
     else if (gwDepth < 5) gwScore = 70;
@@ -956,9 +1014,13 @@ async function fetchPredictiveOutlook() {
     { name: "Recession Phase", score: recessionScore, weight: 0.10, detail: recessionDetail },
   ];
 
-  const compositeScore = Math.round(
-    weights.reduce((sum, f) => sum + f.score * f.weight, 0)
-  );
+  const unavailable = new Set<string>();
+  if (soilPct === null) unavailable.add("Soil Moisture");
+  if (gwDepth === null) unavailable.add("Groundwater");
+  if (!regularGauges.some(g => g.id === "01512500")) unavailable.add("Confluence Sync");
+  for (const f of weights) if (unavailable.has(f.name)) { f.score = 0; f.weight = 0; f.detail = "Unavailable or stale; excluded from score"; }
+  const availableWeight = weights.reduce((sum, f) => sum + f.weight, 0);
+  const compositeScore = Math.round(weights.reduce((sum, f) => sum + f.score * f.weight, 0) / availableWeight);
   const riskLevel = scoreToRiskLevel(compositeScore) as "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
 
   const factors = weights
@@ -972,16 +1034,8 @@ async function fetchPredictiveOutlook() {
     .sort((a, b) => b.contribution - a.contribution);
 
   // === OUTLOOK (24h, 48h, 72h) ===
-  const qpf24Total = gridpoint?.qpfTimeline
-    ? gridpoint.qpfTimeline
-        .filter(p => new Date(p.time).getTime() <= Date.now() + 24 * 3600 * 1000)
-        .reduce((sum, p) => sum + p.value, 0)
-    : 0;
-  const qpf72Total = gridpoint?.qpfTimeline
-    ? gridpoint.qpfTimeline
-        .filter(p => new Date(p.time).getTime() <= Date.now() + 72 * 3600 * 1000)
-        .reduce((sum, p) => sum + p.value, 0)
-    : 0;
+  const qpf24Total = gridpoint.precipitation.next24h.inches;
+  const qpf72Total = gridpoint.precipitation.next72h.inches;
 
   const calcScore = (qpf: number, recPhase: number) => {
     let qScore = 0;
@@ -990,15 +1044,8 @@ async function fetchPredictiveOutlook() {
     else if (qpf <= 1) qScore = 50;
     else if (qpf <= 2) qScore = 75;
     else qScore = Math.min(100, 75 + (qpf - 2) * 12.5);
-    return Math.round(
-      stageScore * 0.25 +
-      basinScore * 0.15 +
-      qScore * 0.20 +
-      soilScore * 0.10 +
-      gwScore * 0.10 +
-      confluenceScore * 0.10 +
-      recPhase * 0.10
-    );
+    return Math.round(weights.reduce((sum, f) => sum +
+      (f.name === "QPF (48h)" ? qScore : f.name === "Recession Phase" ? recPhase : f.score) * f.weight, 0) / availableWeight);
   };
 
   const score24 = calcScore(qpf24Total, recessionScore * 0.8);
@@ -1009,8 +1056,8 @@ async function fetchPredictiveOutlook() {
   function computeSimilarity(flood: typeof HISTORICAL_FLOODS[0]): number {
     const dims: Array<{ current: number; target: number; maxRange: number }> = [
       { current: qpf48Total, target: flood.triggers.qpf48, maxRange: 10 },
-      { current: soilPct ?? 50, target: flood.triggers.soilMoisturePct, maxRange: 100 },
-      { current: gwDepth ?? 8, target: flood.triggers.gwDepth, maxRange: 15 },
+      ...(soilPct !== null ? [{ current: soilPct, target: flood.triggers.soilMoisturePct, maxRange: 100 }] : []),
+      ...(gwDepth !== null ? [{ current: gwDepth, target: flood.triggers.gwDepth, maxRange: 15 }] : []),
       { current: conklin?.stage ?? 5, target: flood.triggers.conklinStage, maxRange: 20 },
     ];
     const allRisingMatch = flood.triggers.allRising === (csState === "BOTH_RISING") ? 0 : 1;
@@ -1047,7 +1094,7 @@ async function fetchPredictiveOutlook() {
     ? `Watch for: Conklin stage crossing ${conklinActionStage}ft action level (currently ${conklin.stage.toFixed(2)}ft).`
     : `Watch for: Any gauge crossing minor flood stage.`;
 
-  const narrative = `Basin risk is ${riskLevel} (score ${compositeScore}/100), driven primarily by ${primaryFactor.name.toLowerCase()} (${primaryFactor.detail}).${matchPhrase} Risk would escalate to ${scoreToRiskLevel(compositeScore + 20)} if ${escalationTrigger}. De-escalation likely when ${deescalationTrigger}. ${watchFor}`;
+  const narrative = `Experimental risk indicator: ${riskLevel} (${compositeScore}/100), driven primarily by ${primaryFactor.name.toLowerCase()} (${primaryFactor.detail}).${matchPhrase} These heuristic comparisons are not flood probabilities or validated forecasts. ${unavailable.size ? `Missing inputs excluded: ${Array.from(unavailable).join(", ")}. ` : ""}${watchFor}`;
 
   return {
     compositeScore,
@@ -1063,6 +1110,8 @@ async function fetchPredictiveOutlook() {
       deescalation: deescalationTrigger,
     },
     generatedAt: new Date().toISOString(),
+    dataCoverage: `${7 - unavailable.size}/7 factors available; ${regularGauges.length} current river gauges`,
+    qpf72Complete: gridpoint.precipitation.next72h.coverageHours >= 71,
   };
 }
 
@@ -1087,6 +1136,9 @@ const usgsCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
 const mesonetCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
 
 const USGS_CAM_URLS: Record<string, string> = {
+  "norwich-staff": "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Norwich_Staff/NY_Chenango_River_at_Norwich_Staff_newest.jpg",
+  "norwich-downstream": "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Norwich_Downstream/NY_Chenango_River_at_Norwich_Downstream_newest.jpg",
+  towanda: "https://usgs-nims-images.s3.amazonaws.com/720/PA_Susquehanna_River_at_Towanda/PA_Susquehanna_River_at_Towanda_newest.jpg",
   oxford: "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Oxford/NY_Chenango_River_at_Oxford_newest.jpg",
   sherburne: "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Sherburne/NY_Chenango_River_at_Sherburne_newest.jpg",
 };
@@ -1115,7 +1167,7 @@ async function fetchCommunityFeed() {
     "https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=flood+flooding+river+storm+binghamton&restrict_sr=on&sort=new&t=month&limit=10",
   ];
 
-  const FLOOD_KEYWORDS = /flood|river|water level|storm|road closed|warning|emergency|evacuate|dam/i;
+  const FLOOD_KEYWORDS = /\b(flood(?:ing|ed)?|river|water level|storm|road closed|flood warning|evacuat(?:e|ion)|dam)\b/i;
   const IMAGE_SOURCES = /i\.redd\.it|preview\.redd\.it|imgur|\.(jpg|jpeg|png)/i;
 
   function extractTagText(xml: string, tag: string): string {
@@ -1151,12 +1203,15 @@ async function fetchCommunityFeed() {
   }> = [];
 
   const seenLinks = new Set<string>();
+  let successfulFeeds = 0;
 
   for (const rssUrl of RSS_URLS) {
     try {
       const res = await fetchWithUA(rssUrl, 12000);
       if (!res.ok) continue;
       const xml = await res.text();
+      if (!xml.includes("<feed")) continue;
+      successfulFeeds++;
 
       // Split into <entry> blocks
       const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
@@ -1196,6 +1251,7 @@ async function fetchCommunityFeed() {
   }
 
   // Sort by date descending, flood-related first
+  if (!successfulFeeds) throw new Error("Community feeds unavailable");
   allPosts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const floodPosts = allPosts.filter(p => p.isFloodRelated);
@@ -1207,6 +1263,7 @@ async function fetchCommunityFeed() {
     lastUpdated: new Date().toISOString(),
     floodPostCount: floodPosts.length,
     totalPosts: sorted.length,
+    stale: successfulFeeds < RSS_URLS.length,
   };
 }
 
@@ -1218,22 +1275,29 @@ export async function registerRoutes(
 ): Promise<Server> {
 
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.json({ status: "ok", version: "3.6.0", timestamp: new Date().toISOString() });
   });
 
   // Helper for standard cached route
+  const inFlight = new Map<string, Promise<any>>();
   function cachedRoute<T>(path: string, cacheKey: string, fetcher: () => Promise<T>, ttl = CACHE_TTL) {
     app.get(path, async (_req, res) => {
       try {
         const cached = getCached<T>(cacheKey, ttl);
-        if (cached && !cached.stale) return res.json(cached.data);
-        const data = await fetcher();
-        setCache(cacheKey, data);
-        return res.json(data);
+        res.set("Cache-Control", "no-store");
+        if (cached && !cached.stale) return res.json({ ...cached.data as any, retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
+        if (!inFlight.has(cacheKey)) {
+          const task = loadSource(cacheKey, fetcher, ttl)
+            .finally(() => inFlight.delete(cacheKey));
+          inFlight.set(cacheKey, task);
+        }
+        const data = await inFlight.get(cacheKey);
+        return res.json({ ...data, retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
       } catch (err: any) {
         const cached = getCached<T>(cacheKey, ttl);
-        if (cached) return res.json({ ...cached.data as any, stale: true, error: err.message });
-        return res.status(500).json({ error: err.message });
+        if (cached) return res.json({ ...cached.data as any, stale: true, error: err.message,
+          retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
+        return res.status(502).json({ error: err.message, stale: true });
       }
     });
   }
@@ -1241,8 +1305,9 @@ export async function registerRoutes(
   cachedRoute("/api/gauges", "gauges", fetchGaugeData);
   cachedRoute("/api/forecast", "forecast", fetchForecast);
   cachedRoute("/api/weather", "weather", fetchWeather);
-  cachedRoute("/api/ensemble", "ensemble", fetchEnsemble);
-  cachedRoute("/api/news", "news", fetchNews);
+  cachedRoute("/api/ensemble", "ensemble", flowEnsembles, 30 * 60 * 1000);
+  cachedRoute("/api/news", "news", activeAlerts);
+  cachedRoute("/api/river-forecasts", "river-forecasts", riverForecasts, 5 * 60 * 1000);
   cachedRoute("/api/groundwater", "groundwater", fetchGroundwater);
   cachedRoute("/api/surface-obs", "surface-obs", fetchSurfaceObs);
   cachedRoute("/api/gridpoint-data", "gridpoint-data", fetchGridpointData, 10 * 60 * 1000);
@@ -1258,8 +1323,8 @@ export async function registerRoutes(
         res.set("Content-Type", "image/png");
         return res.send(cached.data);
       }
-      const imgRes = await fetch(
-        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q-900913&SRS=EPSG:4326&BBOX=41.3,-76.8,42.8,-74.8&WIDTH=600&HEIGHT=400&FORMAT=image/png&TRANSPARENT=TRUE"
+      const imgRes = await fetchWithUA(
+        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q-900913&SRS=EPSG:4326&BBOX=-76.8,41.3,-74.8,42.8&WIDTH=600&HEIGHT=400&FORMAT=image/png&TRANSPARENT=TRUE"
       );
       if (!imgRes.ok) throw new Error(`Radar returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
@@ -1275,11 +1340,13 @@ export async function registerRoutes(
   cachedRoute("/api/webcams", "webcams-meta", async () => {
     const cameras = [
       // River cameras (USGS — most valuable for flood monitoring)
+      { id: "usgs-norwich-staff", name: "Chenango River at Norwich — Staff Gauge", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-staff", refreshInterval: 1800, description: "USGS river-level reference view; check image timestamp" },
+      { id: "usgs-norwich-downstream", name: "Chenango River at Norwich — Downstream", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-downstream", refreshInterval: 1800, description: "USGS downstream view; check image timestamp" },
+      { id: "usgs-towanda", name: "Susquehanna River at Towanda, PA", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/towanda", refreshInterval: 1800, description: "Downstream basin context; periodic USGS image" },
       { id: "usgs-oxford", name: "Chenango River at Oxford", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/oxford", refreshInterval: 3600, description: "USGS 01505010 — upstream Chenango, bridge view" },
       { id: "usgs-sherburne", name: "Chenango River at Sherburne", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/sherburne", refreshInterval: 3600, description: "USGS 01505000 — upstream Chenango, river bend" },
       // Weather cameras
       { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, category: "weather" as const, imageUrl: "/api/webcams/nws", refreshInterval: 600, description: "South view from NWS BGM office" },
-      { id: "mesonet-bing", name: "NYS Mesonet Binghamton", type: "mesonet" as const, category: "weather" as const, imageUrl: "/api/webcams/mesonet/bing", refreshInterval: 3600, description: "Atmospheric conditions — Binghamton area" },
       // Traffic cameras (NYSDOT)
       ...DOT_CAMERAS.map(c => ({
         id: c.id,
@@ -1291,6 +1358,14 @@ export async function registerRoutes(
         description: "NYSDOT traffic camera",
       })),
     ];
+    await Promise.all(cameras.filter(c => c.type === "usgs").map(async cam => {
+      const key = cam.imageUrl.split("/").pop()!;
+      try {
+        const response = await fetch(USGS_CAM_URLS[key], { method: "HEAD", signal: AbortSignal.timeout(5000) });
+        Object.assign(cam, { publishedAt: response.ok ? response.headers.get("last-modified") : null,
+          sourceUrl: USGS_CAM_URLS[key] });
+      } catch { Object.assign(cam, { publishedAt: null, sourceUrl: USGS_CAM_URLS[key] }); }
+    }));
     return { cameras };
   }, 10 * 60 * 1000);
 
@@ -1307,18 +1382,13 @@ export async function registerRoutes(
     }
 
     try {
-      const imgRes = await fetch(sourceUrl, { headers: { "User-Agent": USER_AGENT } });
+      const imgRes = await fetchWithUA(sourceUrl, 12000);
       if (!imgRes.ok) throw new Error(`USGS camera returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
       usgsCamCache[location] = { buf, timestamp: Date.now() };
       res.set("Content-Type", "image/jpeg");
       return res.send(buf);
     } catch (err: any) {
-      // Return stale cache if available
-      if (cached) {
-        res.set("Content-Type", "image/jpeg");
-        return res.send(cached.buf);
-      }
       return res.status(502).json({ error: err.message });
     }
   });
@@ -1326,10 +1396,13 @@ export async function registerRoutes(
   // V6: Mesonet/Ventusky webcam proxy (hourly image, try current hour then fallback to previous)
   app.get("/api/webcams/mesonet/:station", async (req, res) => {
     const station = req.params.station;
+    if (station !== "bing") return res.status(404).json({ error: "Unknown camera station" });
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
     const hour = now.getUTCHours().toString().padStart(2, "0");
-    const prevHour = ((now.getUTCHours() - 1 + 24) % 24).toString().padStart(2, "0");
+    const previous = new Date(now.getTime() - 3600_000);
+    const prevDate = previous.toISOString().slice(0, 10).replace(/-/g, "");
+    const prevHour = previous.getUTCHours().toString().padStart(2, "0");
     const cacheKey = `mesonet-${station}-${dateStr}${hour}`;
 
     const cached = mesonetCamCache[cacheKey];
@@ -1340,14 +1413,17 @@ export async function registerRoutes(
 
     const urls = [
       `https://webcams.ventusky.com/data/91/332236991/hour/${dateStr}_${hour}00.jpg`,
-      `https://webcams.ventusky.com/data/91/332236991/hour/${dateStr}_${prevHour}00.jpg`,
+      `https://webcams.ventusky.com/data/91/332236991/hour/${prevDate}_${prevHour}00.jpg`,
     ];
 
     for (const url of urls) {
       try {
-        const imgRes = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+        const imgRes = await fetchWithUA(url, 8000);
         if (!imgRes.ok) continue;
         const buf = Buffer.from(await imgRes.arrayBuffer());
+        for (const key of Object.keys(mesonetCamCache)) {
+          if (Date.now() - mesonetCamCache[key].timestamp > USGS_CAM_CACHE_TTL) delete mesonetCamCache[key];
+        }
         mesonetCamCache[cacheKey] = { buf, timestamp: Date.now() };
         res.set("Content-Type", "image/jpeg");
         return res.send(buf);
@@ -1355,7 +1431,7 @@ export async function registerRoutes(
     }
 
     // Return stale cache if available (any key for this station)
-    const staleKey = Object.keys(mesonetCamCache).find(k => k.startsWith(`mesonet-${station}-`));
+    const staleKey = Object.keys(mesonetCamCache).find(k => k.startsWith(`mesonet-${station}-`) && Date.now() - mesonetCamCache[k].timestamp < USGS_CAM_CACHE_TTL);
     if (staleKey) {
       res.set("Content-Type", "image/jpeg");
       return res.send(mesonetCamCache[staleKey].buf);
@@ -1371,9 +1447,7 @@ export async function registerRoutes(
         res.set("Content-Type", "image/jpeg");
         return res.send(cached.data);
       }
-      const imgRes = await fetch("https://www.weather.gov/images/bgm/southview.jpg", {
-        headers: { "User-Agent": USER_AGENT },
-      });
+      const imgRes = await fetchWithUA("https://www.weather.gov/images/bgm/southview.jpg", 12000);
       if (!imgRes.ok) throw new Error(`NWS webcam returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
       setCache("nws-webcam-img", buf);
@@ -1385,7 +1459,7 @@ export async function registerRoutes(
   });
 
   // V5: DOT camera frame extraction via ffmpeg
-  app.get("/api/webcams/dot/:cameraId", (req, res) => {
+  app.get("/api/webcams/dot/:cameraId", async (req, res) => {
     const cameraId = req.params.cameraId;
     const cam = DOT_CAMERAS.find(c => c.id === cameraId);
     if (!cam) return res.status(404).json({ error: "Unknown camera ID" });
@@ -1398,8 +1472,9 @@ export async function registerRoutes(
     }
 
     try {
-      const cmd = `ffmpeg -y -i "${cam.stream}" -frames:v 1 -q:v 3 -f image2pipe -vcodec mjpeg pipe:1`;
-      const buf = execSync(cmd, { timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
+      const { stdout: buf } = await execFileAsync("ffmpeg",
+        ["-loglevel", "error", "-i", cam.stream, "-frames:v", "1", "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+        { timeout: 10000, maxBuffer: 5 * 1024 * 1024, encoding: "buffer" });
       setDotCamCache(cameraId, buf);
       res.set("Content-Type", "image/jpeg");
       return res.send(buf);
@@ -1427,7 +1502,7 @@ export async function registerRoutes(
         res.set("Content-Type", "image/gif");
         return res.send(cached.data);
       }
-      const imgRes = await fetch(url);
+      const imgRes = await fetchWithUA(url, 12000);
       if (!imgRes.ok) throw new Error(`SPC returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
       setCache(cacheKey, buf);

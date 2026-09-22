@@ -10,7 +10,12 @@ try:
         try:
             with rasterio.open(url) as ds:
                 row, col = ds.index(-75.918, 42.099)
-                val = float(ds.read(1)[row, col])
+                sample = next(ds.sample([(-75.918, 42.099)], masked=True))[0]
+                if getattr(sample, "mask", False):
+                    continue
+                val = float(sample)
+                if not (0 <= val <= 100):
+                    continue
                 print(json.dumps({"percentile": round(val, 1), "date": d.strftime('%Y-%m-%d')}))
                 sys.exit(0)
         except Exception:

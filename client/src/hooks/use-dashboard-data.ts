@@ -7,7 +7,7 @@ const REFRESH_INTERVAL = 300000; // 5 minutes
 export function useDashboardData() {
   const queryClient = useQueryClient();
   const [countdown, setCountdown] = useState(REFRESH_INTERVAL / 1000);
-  const [lastRefresh, setLastRefresh] = useState(new Date());
+  const [lastRefresh, setLastRefresh] = useState(new Date(0));
   const timerRef = useRef<ReturnType<typeof setInterval>>();
   const countdownRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -102,8 +102,8 @@ export function useDashboardData() {
     queryClient.invalidateQueries({ queryKey: ["/api/gridpoint-data"] });
     queryClient.invalidateQueries({ queryKey: ["/api/predictive-outlook"] });
     queryClient.invalidateQueries({ queryKey: ["/api/community-feed"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/webcams"] });
     // Don't refresh daily caches on every cycle
-    setLastRefresh(new Date());
     setCountdown(REFRESH_INTERVAL / 1000);
   }, [queryClient]);
 
@@ -119,9 +119,17 @@ export function useDashboardData() {
     return () => { if (countdownRef.current) clearInterval(countdownRef.current); };
   }, []);
 
-  const isAnyLoading = gauges.isLoading || forecast.isLoading || weather.isLoading;
+  useEffect(() => {
+    const queries = [gauges, forecast, weather];
+    if (queries.every(q => q.dataUpdatedAt && !(q.data as any)?.stale && !q.isError)) {
+      setLastRefresh(new Date(Math.min(...queries.map(q => q.dataUpdatedAt))));
+    }
+  }, [gauges.dataUpdatedAt, forecast.dataUpdatedAt, weather.dataUpdatedAt, gauges.isError, forecast.isError, weather.isError]);
+
+  const isAnyLoading = gauges.isFetching || forecast.isFetching || weather.isFetching;
   const isAnyError = gauges.isError || forecast.isError || weather.isError;
-  const isDataStale = Date.now() - lastRefresh.getTime() > 10 * 60 * 1000;
+  const isDataStale = !lastRefresh.getTime() || Date.now() - lastRefresh.getTime() > 10 * 60 * 1000 ||
+    [gauges, forecast, weather].some(q => (q.data as any)?.stale);
 
   const connectionStatus: "live" | "stale" | "offline" =
     isAnyError ? "offline" : isDataStale ? "stale" : "live";

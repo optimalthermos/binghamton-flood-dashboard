@@ -14,6 +14,7 @@ export const timeSeriesPointSchema = z.object({
 
 export const gaugeDataSchema = z.object({
   id: z.string(),
+  source: z.string().optional(),
   name: z.string(),
   river: z.string(),
   stage: z.number().nullable(),
@@ -28,6 +29,8 @@ export const gaugeDataSchema = z.object({
   isReservoir: z.boolean().optional(),
   poolElevation: z.number().nullable().optional(),
   conservationPool: z.number().optional(),
+  floodPool: z.number().optional(),
+  poolRangePct: z.number().nullable().optional(),
   floodStoragePct: z.number().nullable().optional(),
   recessionRate: z.number().nullable().optional(),
   recessionPhase: z.enum(["FAST_RECESSION", "BASEFLOW", "LOADING"]).nullable().optional(),
@@ -265,6 +268,8 @@ export const predictiveOutlookSchema = z.object({
     deescalation: z.string(),
   }),
   generatedAt: z.string(),
+  dataCoverage: z.string().optional(),
+  qpf72Complete: z.boolean().optional(),
 });
 
 export type PredictiveOutlook = z.infer<typeof predictiveOutlookSchema>;
@@ -272,6 +277,8 @@ export type PredictiveOutlook = z.infer<typeof predictiveOutlookSchema>;
 // V5: Webcam feeds
 export const webcamSchema = z.object({
   id: z.string(),
+  publishedAt: z.string().nullable().optional(),
+  sourceUrl: z.string().optional(),
   name: z.string(),
   type: z.enum(["nws", "dot", "usgs", "mesonet"]),
   category: z.enum(["river", "weather", "traffic"]).optional(),

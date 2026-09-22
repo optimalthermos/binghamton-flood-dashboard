@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Camera, ChevronDown, ChevronUp, Waves } from "lucide-react";
+import { Camera, ChevronDown, ChevronUp, Waves, RefreshCw } from "lucide-react";
 import type { Webcam } from "@shared/schema";
+import { apiUrl } from "@/lib/queryClient";
 
 interface WebcamPanelProps {
   webcamsData: { cameras: Webcam[] } | undefined;
@@ -28,14 +29,16 @@ function CameraThumb({
   onClick: () => void;
   isSelected: boolean;
 }) {
-  const [src, setSrc] = useState(`${cam.imageUrl}?_=${Date.now()}`);
+  const [src, setSrc] = useState(`${apiUrl(cam.imageUrl)}?_=${Date.now()}`);
   const [offline, setOffline] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   // Auto-refresh on interval
   useEffect(() => {
     const interval = setInterval(() => {
-      setSrc(`${cam.imageUrl}?_=${Date.now()}`);
+      setSrc(`${apiUrl(cam.imageUrl)}?_=${Date.now()}`);
       setOffline(false);
+      setLoaded(false);
     }, cam.refreshInterval * 1000);
     return () => clearInterval(interval);
   }, [cam.imageUrl, cam.refreshInterval]);
@@ -43,9 +46,10 @@ function CameraThumb({
   const category = cam.category || "traffic";
   const catInfo = CATEGORY_LABELS[category] || CATEGORY_LABELS.traffic;
   const isRiver = category === "river";
+  const imageAge = cam.publishedAt ? Date.now() - Date.parse(cam.publishedAt) : null;
 
   return (
-    <div
+    <button type="button" aria-label={`Enlarge ${cam.name}`} aria-pressed={isSelected}
       className={`relative overflow-hidden rounded-lg border cursor-pointer group transition-all ${
         isRiver
           ? "border-primary/30 hover:border-primary/60"
@@ -66,22 +70,16 @@ function CameraThumb({
             src={src}
             alt={cam.name}
             className="w-full h-full object-cover"
+            width="640" height="360" decoding="async"
             onError={() => setOffline(true)}
+            onLoad={() => setLoaded(true)}
             loading="lazy"
           />
         )}
 
         {/* LIVE indicator */}
         <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/60 rounded px-1.5 py-0.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-[10px] font-semibold text-emerald-400 tracking-wide">LIVE</span>
-        </div>
-
-        {/* Category badge */}
-        <div className="absolute top-2 right-2">
-          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${catInfo.color}`}>
-            {catInfo.label}
-          </span>
+          <span className="text-xs font-semibold text-white tracking-wide">{offline ? "UNAVAILABLE" : !loaded ? "LOADING" : imageAge !== null && imageAge > 2 * 3600_000 ? "OLDER IMAGE" : "SNAPSHOT"}</span>
         </div>
 
         {/* Camera name + description overlay */}
@@ -90,18 +88,21 @@ function CameraThumb({
           {cam.description && size !== "small" && (
             <div className="text-[9px] text-white/55 line-clamp-1 mt-0.5">{cam.description}</div>
           )}
+          {cam.publishedAt && <div className="text-[10px] text-white/90">Published {new Date(cam.publishedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>}
         </div>
 
         {/* Hover overlay */}
         <div className="absolute inset-0 bg-primary/0 group-hover:bg-primary/5 transition-colors" />
       </div>
-    </div>
+    </button>
   );
 }
 
 export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
   const [showAllTraffic, setShowAllTraffic] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const [expandedFailed, setExpandedFailed] = useState(false);
+  const [revision, setRevision] = useState(0);
 
   const cameras = webcamsData?.cameras || [];
 
@@ -111,6 +112,7 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
   const visibleTrafficCams = showAllTraffic ? trafficCams : trafficCams.slice(0, 4);
 
   const handleClick = useCallback((id: string) => {
+    setExpandedFailed(false);
     setSelected(prev => prev === id ? null : id);
   }, []);
 
@@ -147,19 +149,24 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
             Area Cameras
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">{cameras.length}</Badge>
           </CardTitle>
+          <Button variant="ghost" size="sm" aria-label="Refresh camera snapshots" onClick={() => { setRevision(v => v + 1); setExpandedFailed(false); }}>
+            <RefreshCw className="h-3.5 w-3.5 mr-1" />Refresh
+          </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        <p className="text-[10px] text-muted-foreground">Periodic snapshots, not verified live video. Older images are labeled; publication time may differ from capture time.</p>
 
         {/* Selected camera expanded view */}
         {selectedCam && (
           <div className="relative rounded-lg overflow-hidden border border-primary/30">
-            <img
-              src={`${selectedCam.imageUrl}?_=${Date.now()}`}
+            {expandedFailed ? <div className="aspect-video flex items-center justify-center text-muted-foreground">Camera unavailable. Try again later.</div> : <img
+              src={`${apiUrl(selectedCam.imageUrl)}?r=${revision}`}
               alt={selectedCam.name}
               className="w-full object-contain max-h-80"
-              onError={() => {}}
-            />
+              width="640" height="360"
+              onError={() => setExpandedFailed(true)}
+            />}
             <div className="absolute bottom-0 left-0 right-0 px-3 py-1.5 bg-gradient-to-t from-black/80 to-transparent">
               <div className="text-sm font-medium text-white/90">{selectedCam.name}</div>
               {selectedCam.description && (
@@ -167,6 +174,7 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
               )}
             </div>
             <button
+              aria-label="Close expanded camera"
               onClick={() => setSelected(null)}
               className="absolute top-2 right-2 bg-black/60 text-white/80 text-[10px] px-2 py-0.5 rounded hover:bg-black/80 transition-colors"
             >
@@ -181,12 +189,12 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
             <div className="flex items-center gap-2 mb-2">
               <Waves className="h-3.5 w-3.5 text-blue-400" />
               <span className="text-xs font-semibold text-blue-400 uppercase tracking-wide">River Cameras</span>
-              <span className="text-[10px] text-muted-foreground">USGS — upstream Chenango</span>
+              <span className="text-[10px] text-muted-foreground">USGS · Chenango & Susquehanna</span>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {riverCams.map(cam => (
                 <CameraThumb
-                  key={cam.id}
+                  key={`${cam.id}-${revision}`}
                   cam={cam}
                   size="large"
                   isSelected={selected === cam.id}
@@ -203,10 +211,10 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">NWS &amp; Weather</span>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {weatherCams.map(cam => (
                 <CameraThumb
-                  key={cam.id}
+                  key={`${cam.id}-${revision}`}
                   cam={cam}
                   size="normal"
                   isSelected={selected === cam.id}
@@ -240,10 +248,10 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
                 </Button>
               )}
             </div>
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
               {visibleTrafficCams.map(cam => (
                 <CameraThumb
-                  key={cam.id}
+                  key={`${cam.id}-${revision}`}
                   cam={cam}
                   size="small"
                   isSelected={selected === cam.id}

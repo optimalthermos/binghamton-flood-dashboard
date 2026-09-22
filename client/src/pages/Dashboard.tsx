@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
+import { apiUrl } from "@/lib/queryClient";
 import { WebcamPanel } from "@/components/WebcamPanel";
 import { CommunityFeedPanel } from "@/components/CommunityFeedPanel";
 import HamRadioPanel from "@/components/HamRadioPanel";
@@ -116,13 +117,13 @@ function DashboardHeader({ countdown, lastRefresh, onRefresh, isLoading, connect
             Next: {formatCountdown(countdown)}
           </div>
           <div className="text-xs text-muted-foreground">
-            Updated: {lastRefresh.toLocaleTimeString()}
+            Updated: {lastRefresh.getTime() ? lastRefresh.toLocaleTimeString() : "Checking"}
           </div>
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={isLoading}>
             <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isLoading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
-          <Button variant="outline" size="sm" onClick={toggleDark}>
+          <Button variant="outline" size="sm" onClick={toggleDark} aria-label="Toggle light and dark theme">
             {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
           </Button>
         </div>
@@ -307,12 +308,12 @@ function ConfluenceSyncPanel({ gaugesResp }: { gaugesResp?: GaugesResponse }) {
 
 // === Whitney Point Dam Card (v2 feature 1) ===
 function ReservoirCard({ gauge }: { gauge: GaugeData }) {
-  const pct = gauge.floodStoragePct ?? 0;
+  const pct = gauge.poolRangePct ?? 0;
   const pctColor = pct > 60 ? "text-red-400" : pct > 30 ? "text-amber-400" : "text-emerald-400";
   const barColor = pct > 60 ? "bg-red-500" : pct > 30 ? "bg-amber-500" : "bg-emerald-500";
 
   return (
-    <Card className="bg-card border-border col-span-1 sm:col-span-2">
+    <Card className="bg-card border-border col-span-1">
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -323,26 +324,27 @@ function ReservoirCard({ gauge }: { gauge: GaugeData }) {
             </div>
           </div>
           <Badge variant="outline" className={`text-xs ${pctColor}`}>
-            {pct.toFixed(1)}% flood storage
+            {gauge.poolRangePct == null ? "Range unavailable" : `${pct.toFixed(1)}% elevation range`}
           </Badge>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
             <div className={`text-3xl font-bold tabular-nums ${pctColor}`}>
               {gauge.poolElevation?.toFixed(2) ?? "—"}
-              <span className="text-sm font-normal ml-1">ft NGVD</span>
+              <span className="text-sm font-normal ml-1">ft (station datum)</span>
             </div>
             <div className="text-xs text-muted-foreground mt-1">
-              Conservation pool: {gauge.conservationPool}ft | Spillway: 1047.5ft
+              Conservation: {gauge.conservationPool}ft | Upper reference: {gauge.floodPool}ft
             </div>
             <div className="mt-2">
               <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
                 <span>{gauge.conservationPool}ft</span>
-                <span>1047.5ft</span>
+                <span>{gauge.floodPool}ft</span>
               </div>
               <div className="h-3 bg-muted rounded-full overflow-hidden">
                 <div className={`h-full ${barColor} rounded-full transition-all`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
               </div>
+              <p className="text-[10px] text-muted-foreground mt-1">Elevation range, not a storage-volume percentage.</p>
             </div>
             {gauge.recessionRate !== null && gauge.recessionRate !== undefined && (
               <div className="mt-2 flex items-center gap-2 text-xs">
@@ -417,7 +419,7 @@ function GaugeCard({ gauge, expanded, onToggle, ensembleBounds, historicalStat }
             </Badge>
           </div>
           <div className="text-center py-4 text-muted-foreground text-sm">
-            {gauge.isBinghamton ? "Known offline — no data available" : "No data available"}
+            No current observation available
           </div>
         </CardContent>
       </Card>
@@ -614,7 +616,7 @@ function StageChart({ gauges, ensembleBounds }: { gauges: GaugeData[]; ensembleB
   );
 }
 
-function FlowChart({ gauges }: { gauges: GaugeData[] }) {
+function FlowChart({ gauges, ensembleData }: { gauges: GaugeData[]; ensembleData?: any }) {
   const online = gauges.filter(g => !g.isOffline && !g.isReservoir && g.flowTimeSeries.length > 0);
   if (online.length === 0) return null;
 
@@ -666,6 +668,18 @@ function FlowChart({ gauges }: { gauges: GaugeData[] }) {
             ))}
           </LineChart>
         </ResponsiveContainer>
+        {ensembleData?.flowEnsembles?.length > 0 && (
+          <details className="mt-3 border-t border-border pt-2 text-xs">
+            <summary className="cursor-pointer text-primary py-2">NOAA HEFS ensemble guidance · next 72h</summary>
+            <p className="text-muted-foreground mb-2">Highest pointwise 10% / 50% / 90% exceedance guidance, cfs. These are not crest probabilities or stage heights.</p>
+            {ensembleData.flowEnsembles.map((site: any) => <div key={site.id} className="py-2 border-b border-border">
+              <div className="font-medium">{site.name}</div>
+              <div>{site.stale || !site.points.length ? "Current guidance unavailable" :
+                ["p10", "p50", "p90"].map(key => Math.max(...site.points.map((p: any) => p[key])).toLocaleString(undefined, { maximumFractionDigits: 0 })).join(" / ") + " cfs"}</div>
+              <div className="text-muted-foreground">Issued: {site.issuedAt ? new Date(site.issuedAt).toLocaleString() : "not reported"}</div>
+            </div>)}
+          </details>
+        )}
       </CardContent>
     </Card>
   );
@@ -765,7 +779,7 @@ function AtmosphericPanel({ surfaceObs: obs, gridpoint }: { surfaceObs?: Surface
     precip: p.value,
   })) || [];
 
-  const totalQPF = qpfData.reduce((sum, p) => sum + p.precip, 0);
+  const totalQPF = (gridpoint as any)?.precipitation?.next48h?.inches ?? null;
 
   return (
     <Card className="bg-card border-border">
@@ -825,7 +839,7 @@ function AtmosphericPanel({ surfaceObs: obs, gridpoint }: { surfaceObs?: Surface
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-semibold text-muted-foreground">48hr QPF Forecast</span>
-              <Badge variant="outline" className="text-[10px]">{totalQPF.toFixed(2)} in total</Badge>
+              <Badge variant="outline" className="text-[10px]">{totalQPF === null ? "Total unavailable" : `${totalQPF.toFixed(2)} in · next 48h`}</Badge>
             </div>
             <ResponsiveContainer width="100%" height={100}>
               <BarChart data={qpfData} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
@@ -1085,9 +1099,9 @@ function CompoundRiskPanel({ gauges, weather, groundwater, soilMoisture }: {
 }
 
 // === Local Reports Panel (v2 feature 8) ===
-function LocalReportsPanel({ newsData }: { newsData?: NewsData }) {
+function LocalReportsPanel({ newsData, isError }: { newsData?: NewsData; isError?: boolean }) {
   const [open, setOpen] = useState(true);
-  if (!newsData) return null;
+  if (!newsData) return <Card><CardContent className="p-4 text-xs text-muted-foreground">Local Reports & Alerts: {isError ? "NWS feed unavailable; alert status is unconfirmed." : "Checking NWS alerts…"}</CardContent></Card>;
 
   const severityColors: Record<string, string> = {
     warning: "bg-red-500/20 text-red-400 border-red-500/30",
@@ -1122,6 +1136,10 @@ function LocalReportsPanel({ newsData }: { newsData?: NewsData }) {
         </CollapsibleTrigger>
         <CollapsibleContent>
           <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {isError || newsData.stale || newsData.error ? "Alert feed is stale or unavailable. Check NWS directly." :
+                newsData.alerts.length ? "Active NWS alerts for Broome, Tioga, Chenango and Delaware counties, NY." : "No active NWS alerts returned for the monitored counties. This is not an all-clear for every location."}
+            </p>
             {newsData.alerts.map((alert, i) => (
               <div key={`alert-${i}`} className={`rounded-lg p-2.5 border text-xs ${severityColors[alert.severity || "info"]}`}>
                 <div className="flex items-start gap-2">
@@ -1306,18 +1324,17 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
     { name: "USGS Water Services API", status: gauges.isError ? "error" : "ok", url: "https://waterservices.usgs.gov/nwis/iv/", note: "Real-time gauge data + reservoirs" },
     { name: "NWS Forecast API", status: weather.isError ? "error" : "ok", url: "https://api.weather.gov/", note: "Current conditions, 7-day, hourly QPF" },
     { name: "NWS AFD/RVA", status: forecast.isError ? "error" : "ok", url: "https://forecast.weather.gov/", note: "Forecast discussions" },
-    { name: "MARFC Ensemble", status: ensemble.isError ? "warn" : "ok", url: "https://www.weather.gov/source/erh/mmefs/marfc.GEFS.table.html", note: "GEFS ensemble table" },
+    { name: "NOAA HEFS Ensemble", status: ensemble.isError ? "warn" : "ok", url: "https://api.water.noaa.gov/hefs/v1/docs/", note: "Official flow quantiles, next 72 hours" },
     { name: "USGS Groundwater", status: groundwater.isError ? "error" : "ok", url: "https://waterservices.usgs.gov/nwis/iv/", note: "Cn-12 Bainbridge floodplain well" },
     { name: "KBGM Surface Obs", status: surfaceObs.isError ? "error" : "ok", url: "https://api.weather.gov/stations/KBGM", note: "Dewpoint, wind, visibility, precip type" },
-    { name: "NWS Gridpoint (BGM)", status: gridpoint.isError ? "error" : "ok", url: "https://api.weather.gov/gridpoints/BGM/66,57", note: "48hr QPF, dewpoint, temp timelines" },
+    { name: "NWS Gridpoint (BGM)", status: gridpoint.isError ? "error" : "ok", url: "https://api.weather.gov/points/42.0987,-75.9180", note: "Location-resolved QPF, dewpoint, temperature" },
     { name: "CPC Soil Moisture", status: soilMoisture.isError ? "error" : "ok", url: "https://www.cpc.ncep.noaa.gov/", note: "GeoTIFF percentile at Binghamton" },
-    { name: "SPC Mesoanalysis", status: "ok", url: "https://www.spc.noaa.gov/exper/mesoanalysis/", note: "PWAT + 850mb images (Sector 14)" },
-    { name: "IEM NEXRAD Radar", status: "ok", url: "https://mesonet.agron.iastate.edu/", note: "Composite reflectivity WMS" },
-    { name: "USGS Historical Stats", status: "ok", url: "https://waterservices.usgs.gov/nwis/stat/", note: "Daily flow percentiles" },
-    { name: "Snoflo", status: "broken", url: "https://www.snoflo.org/", note: "BROKEN — serving cached Summer 2025 data" },
-    { name: "NYSDOT 511NY Cameras", status: "ok", url: "https://511ny.org/", note: "6 traffic cameras via HLS snapshot" },
-    { name: "Reddit Community Feed", status: "ok", url: "https://www.reddit.com/r/binghamton/", note: "r/binghamton + r/upstate_new_york RSS" },
-    { name: "Broadcastify Scanner", status: "ok", url: "https://www.broadcastify.com/listen/ctid/1828", note: "Broome County public safety audio" },
+    { name: "SPC Mesoanalysis", status: "unchecked", url: "https://www.spc.noaa.gov/exper/mesoanalysis/", note: "PWAT + 850mb images; check image availability" },
+    { name: "IEM NEXRAD Radar", status: "unchecked", url: "https://mesonet.agron.iastate.edu/", note: "Composite reflectivity; check image availability" },
+    { name: "USGS Historical Stats", status: "unchecked", url: "https://waterservices.usgs.gov/nwis/stat/", note: "Daily flow percentiles; not monitored here" },
+    { name: "NYSDOT 511NY Cameras", status: "unchecked", url: "https://511ny.org/", note: "10 traffic cameras; status shown per snapshot" },
+    { name: "Reddit Community Feed", status: "unchecked", url: "https://www.reddit.com/r/binghamton/", note: "Community reports, not official warnings" },
+    { name: "Broadcastify Scanner", status: "unchecked", url: "https://www.broadcastify.com/listen/ctid/1828", note: "External public safety audio; not monitored here" },
   ];
 
   const statusIcon = (s: string) => {
@@ -1326,7 +1343,7 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
       case "warn": return <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />;
       case "error": return <XCircle className="h-3.5 w-3.5 text-red-500" />;
       case "broken": return <XCircle className="h-3.5 w-3.5 text-red-500/60" />;
-      default: return null;
+      default: return <Clock className="h-3.5 w-3.5 text-muted-foreground" />;
     }
   };
 
@@ -1341,7 +1358,7 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm flex items-center gap-2">
                 Data Sources
-                <Badge variant="outline" className="text-[10px]">{okCount}/{sources.length} active</Badge>
+                <Badge variant="outline" className="text-[10px]">{okCount} feeds checked OK</Badge>
               </CardTitle>
               {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </div>
@@ -1356,7 +1373,7 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
                   <div className="font-medium truncate">{s.name}</div>
                   <div className="text-muted-foreground truncate">{s.note}</div>
                 </div>
-                <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline shrink-0">
+                <a href={s.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${s.name}`} className="text-primary hover:underline shrink-0">
                   <ExternalLink className="h-3 w-3" />
                 </a>
               </div>
@@ -1486,6 +1503,8 @@ function BasinStatePanel({ groundwater, soilMoisture, surfaceObs }: {
 function ImageryPanel() {
   const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [activeTab, refreshKey]);
 
   useEffect(() => {
     const interval = setInterval(() => setRefreshKey(k => k + 1), 300000);
@@ -1507,7 +1526,7 @@ function ImageryPanel() {
               onClick={() => setActiveTab("pwat")}>PWAT</Button>
             <Button variant={activeTab === "850mb" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
               onClick={() => setActiveTab("850mb")}>850mb</Button>
-            <Button variant="ghost" size="sm" className="h-6 px-1" onClick={() => setRefreshKey(k => k + 1)}>
+            <Button variant="ghost" size="sm" className="h-6 px-1" aria-label="Refresh weather imagery" onClick={() => setRefreshKey(k => k + 1)}>
               <RefreshCw className="h-3 w-3" />
             </Button>
           </div>
@@ -1515,18 +1534,20 @@ function ImageryPanel() {
       </CardHeader>
       <CardContent>
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
-          {activeTab === "radar" && (
+          {failed && <div className="p-8 text-sm text-muted-foreground">Image unavailable from the provider. Try refreshing.</div>}
+          {!failed && activeTab === "radar" && (
             <img
-              src={`/api/radar-image?_=${refreshKey}`}
+              src={apiUrl(`/api/radar-image?_=${refreshKey}`)}
               alt="NEXRAD Radar — Southern Tier NY"
               className="w-full h-auto"
               style={{ minHeight: 180 }}
-              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+              onError={() => setFailed(true)}
             />
           )}
-          {(activeTab === "pwat" || activeTab === "850mb") && (
+          {!failed && (activeTab === "pwat" || activeTab === "850mb") && (
             <img
-              src={`/api/spc-images/${activeTab}`}
+              src={apiUrl(`/api/spc-images/${activeTab}?_=${refreshKey}`)}
+              onError={() => setFailed(true)}
               alt={activeTab === "pwat" ? "Precipitable Water" : "850mb Analysis"}
               className="w-full h-auto"
               style={{ minHeight: 180 }}
@@ -1584,7 +1605,7 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
   const outlooks = [
     { label: "24h", ...data.outlook24h },
     { label: "48h", ...data.outlook48h },
-    { label: "72h", ...data.outlook72h },
+    { label: data.qpf72Complete === false ? "72h*" : "72h", ...data.outlook72h },
   ];
 
   return (
@@ -1597,6 +1618,7 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
               <CardTitle className="text-sm">Predictive Flood Outlook</CardTitle>
               <p className="text-[10px] text-muted-foreground mt-0.5">
                 Generated {new Date(data.generatedAt).toLocaleTimeString()}
+                {data.dataCoverage && <> · {data.dataCoverage}</>}
               </p>
             </div>
           </div>
@@ -1612,6 +1634,7 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {data.qpf72Complete === false && <p className="text-[10px] text-muted-foreground">*72-hour precipitation coverage is incomplete; this indicator is provisional.</p>}
         {/* Timeline bars */}
         <div>
           <div className="text-xs font-semibold text-muted-foreground mb-2">Risk Outlook</div>
@@ -1682,7 +1705,7 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
 
         {/* Narrative */}
         <div className="bg-muted/20 rounded-lg p-3 border border-border">
-          <div className="text-xs font-semibold text-muted-foreground mb-1.5">AI Narrative</div>
+          <div className="text-xs font-semibold text-muted-foreground mb-1.5">Live-data analysis · experimental heuristic</div>
           <p className="text-sm leading-relaxed text-foreground/90">
             {data.narrative}
           </p>
@@ -1690,7 +1713,7 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
 
         {/* Historical matches */}
         <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-2">Historical Pattern Match</div>
+          <div className="text-xs font-semibold text-muted-foreground mb-2">Historical Pattern Match · illustrative, not probability</div>
           <div className="space-y-2">
             {data.historicalMatches.slice(0, 2).map(m => {
               const sc = sevColors[m.severity] || sevColors.MINOR;
@@ -1713,7 +1736,7 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
           {data.historicalMatches.every(m => m.similarity < 40) && (
             <div className="text-[10px] text-emerald-400 mt-1.5 flex items-center gap-1">
               <CheckCircle className="h-3 w-3" />
-              Current conditions are not in a historical flood pattern
+              Low similarity in this heuristic does not rule out flooding
             </div>
           )}
         </div>
@@ -1743,7 +1766,7 @@ function StaleBanner() {
   return (
     <div className="bg-amber-500/20 border border-amber-500/30 rounded-lg px-4 py-2 flex items-center gap-2 text-amber-200 text-sm">
       <AlertTriangle className="h-4 w-4" />
-      <span>Data may be stale — last successful refresh was more than 10 minutes ago</span>
+      <span>Checking sources, or some data is stale/unavailable. Refer to observation times and official warnings.</span>
     </div>
   );
 }
@@ -1860,7 +1883,7 @@ export default function Dashboard() {
 
               {/* Stage + Flow Charts */}
               {gaugeList.length > 0 && <StageChart gauges={gaugeList} ensembleBounds={ensembleBounds} />}
-              {gaugeList.length > 0 && <FlowChart gauges={gaugeList} />}
+              {gaugeList.length > 0 && <FlowChart gauges={gaugeList} ensembleData={ensemble.data} />}
 
             </div>
 
@@ -1891,7 +1914,7 @@ export default function Dashboard() {
               <HamRadioPanel />
 
               {/* Alerts & Reports */}
-              <LocalReportsPanel newsData={news.data} />
+              <LocalReportsPanel newsData={news.data} isError={news.isError} />
 
               {/* V5: Community Feed Panel — after local reports, before weather */}
               <CommunityFeedPanel
@@ -1921,14 +1944,14 @@ export default function Dashboard() {
               <AFDPanel forecast={forecast.data} />
               <RiverSummaryPanel forecast={forecast.data} />
               <DataSourceStatus
-                gauges={{ isError: gauges.isError }}
-                forecast={{ isError: forecast.isError }}
-                weather={{ isError: weather.isError }}
-                ensemble={{ isError: ensemble.isError }}
-                groundwater={{ isError: groundwater.isError }}
-                surfaceObs={{ isError: surfaceObs.isError }}
-                gridpoint={{ isError: gridpointData.isError }}
-                soilMoisture={{ isError: soilMoisture.isError }}
+                gauges={{ isError: gauges.isError || !gauges.data || !!(gauges.data as any)?.stale }}
+                forecast={{ isError: forecast.isError || !forecast.data || !!(forecast.data as any)?.stale }}
+                weather={{ isError: weather.isError || !weather.data || !!(weather.data as any)?.stale }}
+                ensemble={{ isError: ensemble.isError || !ensemble.data || !!(ensemble.data as any)?.stale }}
+                groundwater={{ isError: groundwater.isError || !groundwater.data || !!groundwater.data?.error || !!groundwater.data?.stale }}
+                surfaceObs={{ isError: surfaceObs.isError || !surfaceObs.data || !!surfaceObs.data?.stale }}
+                gridpoint={{ isError: gridpointData.isError || !gridpointData.data || !!gridpointData.data?.stale }}
+                soilMoisture={{ isError: soilMoisture.isError || !soilMoisture.data || !!soilMoisture.data?.error || !!soilMoisture.data?.stale }}
               />
             </div>
           </div>
