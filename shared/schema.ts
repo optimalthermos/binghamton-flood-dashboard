@@ -74,6 +74,10 @@ export const forecastDataSchema = z.object({
     longTerm: z.string(),
     rawText: z.string(),
     issuedAt: z.string(),
+    sections: z.array(z.object({
+      heading: z.string(),
+      text: z.string(),
+    })).optional(),
   }),
   riverSummary: z.object({
     text: z.string(),
