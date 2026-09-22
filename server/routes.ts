@@ -4,6 +4,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles } from "./monitoring";
 import { observationState, precipitationTotal } from "../shared/monitoring";
+import { buildFloodPathways } from "../shared/scenarios";
 import { createHash } from "crypto";
 import type {
   GaugeData, TimeSeriesPoint, ForecastData, WeatherData,
@@ -508,6 +509,9 @@ async function fetchWeather(): Promise<WeatherData> {
       shortForecast: p.shortForecast,
       detailedForecast: p.detailedForecast,
       isDaytime: p.isDaytime,
+      precipProbability: typeof p.probabilityOfPrecipitation?.value === "number" ? p.probabilityOfPrecipitation.value : null,
+      windSpeed: p.windSpeed || null,
+      windDirection: p.windDirection || null,
     }));
   }
 
@@ -781,17 +785,19 @@ function scoreToRiskLevel(score: number): string {
 
 async function fetchPredictiveOutlook() {
   // Fetch all upstream data, degrading gracefully on failures
-  const [gaugeResult, gridpointResult, soilMoistureResult, groundwaterResult] = await Promise.allSettled([
+  const [gaugeResult, gridpointResult, soilMoistureResult, groundwaterResult, weatherResult] = await Promise.allSettled([
     loadSource("gauges", fetchGaugeData),
     loadSource("gridpoint-data", fetchGridpointData, 10 * 60 * 1000),
     loadSource("soil-moisture", fetchSoilMoisture, LONG_CACHE_TTL),
     loadSource("groundwater", fetchGroundwater),
+    loadSource("weather", fetchWeather),
   ]);
 
   const gaugeData = gaugeResult.status === "fulfilled" ? gaugeResult.value : null;
   const gridpoint = gridpointResult.status === "fulfilled" ? gridpointResult.value : null;
   const soilMoisture = soilMoistureResult.status === "fulfilled" ? soilMoistureResult.value : null;
   const groundwater = groundwaterResult.status === "fulfilled" ? groundwaterResult.value : null;
+  const weather = weatherResult.status === "fulfilled" ? weatherResult.value : null;
 
   const gauges = gaugeData?.gauges || [];
   const regularGauges = gauges.filter(g => !g.isReservoir && observationState(g.lastUpdated, g.isOffline) === "current");
@@ -949,17 +955,20 @@ async function fetchPredictiveOutlook() {
 
   // === HISTORICAL PATTERN MATCHING ===
   function computeSimilarity(flood: typeof HISTORICAL_FLOODS[0]): number {
-    const dims: Array<{ current: number; target: number; maxRange: number }> = [
-      { current: qpf48Total, target: flood.triggers.qpf48, maxRange: 10 },
-      ...(soilPct !== null ? [{ current: soilPct, target: flood.triggers.soilMoisturePct, maxRange: 100 }] : []),
-      ...(gwDepth !== null ? [{ current: gwDepth, target: flood.triggers.gwDepth, maxRange: 15 }] : []),
-      { current: conklin?.stage ?? 5, target: flood.triggers.conklinStage, maxRange: 20 },
+    const fraction = (current: number, target: number) => target <= 0 ? 1 : Math.max(0, Math.min(1, current / target));
+    const depthFraction = gwDepth === null ? null : gwDepth <= flood.triggers.gwDepth ? 1 : Math.max(0, Math.min(1, flood.triggers.gwDepth / gwDepth));
+    const rain = fraction(qpf48Total, flood.triggers.qpf48);
+    const stage = fraction(conklin?.stage ?? 0, flood.triggers.conklinStage);
+    const parts = [
+      rain,
+      ...(soilPct !== null ? [fraction(soilPct, flood.triggers.soilMoisturePct)] : []),
+      ...(depthFraction !== null ? [depthFraction] : []),
+      stage,
+      flood.triggers.allRising ? (csState === "BOTH_RISING" ? 1 : 0) : 1,
     ];
-    const allRisingMatch = flood.triggers.allRising === (csState === "BOTH_RISING") ? 0 : 1;
-    const normalizedDists = dims.map(d => Math.abs(d.current - d.target) / d.maxRange);
-    normalizedDists.push(allRisingMatch * 0.5);
-    const avgDist = normalizedDists.reduce((s, v) => s + v, 0) / normalizedDists.length;
-    return Math.round(Math.max(0, (1 - avgDist) * 100));
+    const average = parts.reduce((sum, part) => sum + part, 0) / parts.length;
+    const capped = Math.min(average, Math.max(rain, stage));
+    return Math.round(capped * 100);
   }
 
   const historicalMatches = HISTORICAL_FLOODS
@@ -968,7 +977,18 @@ async function fetchPredictiveOutlook() {
       similarity: computeSimilarity(f),
       severity: f.severity,
       description: f.description,
-      peakComparison: `Current Conklin ${conklin?.stage?.toFixed(2) ?? "?"}ft vs ${f.name.split(" ")[0] === "Tropical" ? "Lee" : f.name.split(" ")[0]} peak ${f.conklinPeak}ft`,
+      peakComparison: `Current Conklin ${conklin?.stage?.toFixed(2) ?? "?"}ft vs recorded peak ${f.conklinPeak}ft at Conklin`,
+      gap: [
+        qpf48Total < f.triggers.qpf48
+          ? `${(f.triggers.qpf48 - qpf48Total).toFixed(1)} in less 48-hour rain than the heuristic setup`
+          : "48-hour rain meets the heuristic setup",
+        (conklin?.stage ?? 0) < f.triggers.conklinStage
+          ? `Conklin is ${(f.triggers.conklinStage - (conklin?.stage ?? 0)).toFixed(1)} ft under the stage used in this comparison`
+          : "Conklin is at or above the stage used in this comparison",
+        f.triggers.allRising && csState !== "BOTH_RISING"
+          ? "both rivers are not rising together"
+          : f.triggers.allRising ? "both rivers are rising, as in this comparison" : "this comparison does not require both rivers to be rising",
+      ].join("; ") + ".",
     }))
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 3);
@@ -991,6 +1011,36 @@ async function fetchPredictiveOutlook() {
 
   const narrative = `Experimental risk indicator: ${riskLevel} (${compositeScore}/100), driven primarily by ${primaryFactor.name.toLowerCase()} (${primaryFactor.detail}).${matchPhrase} These heuristic comparisons are not flood probabilities or validated forecasts. ${unavailable.size ? `Missing inputs excluded: ${Array.from(unavailable).join(", ")}. ` : ""}${watchFor}`;
 
+  const binghamton = regularGauges.find(g => g.id === "01503500");
+  const reservoirRead = (id: string, name: string) => {
+    const gauge = gauges.find(g => g.id === id);
+    const current = gauge && observationState(gauge.lastUpdated, gauge.isOffline) === "current";
+    return {
+      name: gauge?.name || name,
+      pool: current ? gauge.poolElevation ?? gauge.stage : null,
+      action: gauge?.thresholds.action ?? null,
+      minor: gauge?.thresholds.minor ?? null,
+    };
+  };
+  const pathways = buildFloodPathways({
+    conklinStage: conklin?.stage ?? null,
+    conklinAction: conklin?.thresholds.action ?? null,
+    binghamtonStage: binghamton?.stage ?? null,
+    binghamtonAction: binghamton?.thresholds.action ?? null,
+    loadingNames: loadingGauges.map(g => g.name),
+    confluence: csState,
+    qpf24: qpf24Total,
+    qpf48: qpf48Total,
+    soilPct,
+    gwDepth,
+    frost: weather?.frostData?.significance ?? null,
+    precipMentioned: !!weather?.forecast?.some((p: { shortForecast?: string }) => /rain|snow|shower|thunderstorm|drizzle/i.test(p.shortForecast || "")),
+    reservoirs: [
+      reservoirRead("01511000", "Whitney Point Lake"),
+      reservoirRead("01499500", "East Sidney Lake"),
+    ],
+  });
+
   return {
     compositeScore,
     riskLevel,
@@ -999,6 +1049,7 @@ async function fetchPredictiveOutlook() {
     outlook72h: { score: score72, level: scoreToRiskLevel(score72) },
     factors,
     historicalMatches,
+    pathways,
     narrative,
     triggers: {
       escalation: escalationTrigger,
@@ -1125,8 +1176,9 @@ function hashUsername(username: string): string {
 
 async function fetchCommunityFeed() {
   const RSS_URLS = [
-    "https://www.reddit.com/r/binghamton/new.rss?limit=15",
-    "https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=flood+flooding+river+storm+binghamton&restrict_sr=on&sort=new&t=month&limit=10",
+    { name: "r/binghamton", url: "https://www.reddit.com/r/binghamton/new.rss?limit=15" },
+    { name: "r/BroomeCounty", url: "https://www.reddit.com/r/BroomeCounty/new.rss?limit=10" },
+    { name: "r/upstate_new_york flood search", url: "https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=flood+flooding+river+storm+binghamton&restrict_sr=on&sort=new&t=month&limit=10" },
   ];
 
   const FLOOD_KEYWORDS = /\b(flood(?:ing|ed)?|river|water level|storm|road closed|flood warning|evacuat(?:e|ion)|dam)\b/i;
@@ -1153,6 +1205,27 @@ async function fetchCommunityFeed() {
     return m ? m[1] : "reddit";
   }
 
+  function plainExcerpt(html: string): string {
+    const decoded = html
+      .replace(/&amp;/g, "&")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, "\"")
+      .replace(/&#39;|&apos;/g, "'");
+    const text = decoded
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/\s*submitted by\s+\/u\/\S+[\s\S]*$/i, "")
+      .replace(/\[link\]|\[comments\]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!text || text.length < 40) return "";
+    return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+  }
+
   const allPosts: Array<{
     title: string;
     date: string;
@@ -1162,18 +1235,21 @@ async function fetchCommunityFeed() {
     imageUrl: string | null;
     isFloodRelated: boolean;
     anonymizedAuthor: string;
+    excerpt: string;
   }> = [];
 
   const seenLinks = new Set<string>();
   let successfulFeeds = 0;
 
-  for (const rssUrl of RSS_URLS) {
+  const sources: string[] = [];
+  for (const feed of RSS_URLS) {
     try {
-      const res = await fetchWithUA(rssUrl, 12000);
+      const res = await fetchWithUA(feed.url, 12000);
       if (!res.ok) continue;
       const xml = await res.text();
       if (!xml.includes("<feed")) continue;
       successfulFeeds++;
+      sources.push(feed.name);
 
       // Split into <entry> blocks
       const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
@@ -1196,6 +1272,7 @@ async function fetchCommunityFeed() {
         const anonymizedAuthor = authorName ? `User-${hashUsername(authorName)}` : "User-????";
         const subreddit = extractSubreddit(linkHref);
 
+        const excerpt = plainExcerpt(content);
         allPosts.push({
           title: title || "(no title)",
           date: updated || new Date().toISOString(),
@@ -1205,6 +1282,7 @@ async function fetchCommunityFeed() {
           imageUrl,
           isFloodRelated,
           anonymizedAuthor,
+          excerpt: excerpt && excerpt !== title ? excerpt : "",
         });
       }
     } catch (_e) {
@@ -1225,6 +1303,7 @@ async function fetchCommunityFeed() {
     lastUpdated: new Date().toISOString(),
     floodPostCount: floodPosts.length,
     totalPosts: sorted.length,
+    sources,
     stale: successfulFeeds < RSS_URLS.length,
   };
 }

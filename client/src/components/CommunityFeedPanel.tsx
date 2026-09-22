@@ -33,6 +33,9 @@ function PostItem({ post }: { post: CommunityPost }) {
         <div className="flex items-start gap-2 mb-1">
           <p className="text-sm font-medium leading-snug line-clamp-2 flex-1">{post.title}</p>
         </div>
+        {post.excerpt && (
+          <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2 mb-1">{post.excerpt}</p>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           <Badge
             variant="outline"
@@ -93,6 +96,8 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
   const MAX_VISIBLE = 10;
 
   const posts = feedData?.posts?.slice(0, MAX_VISIBLE) || [];
+  const floodPosts = posts.filter(post => post.isFloodRelated);
+  const otherPosts = posts.filter(post => !post.isFloodRelated);
   const floodCount = feedData?.floodPostCount || 0;
 
   return (
@@ -136,21 +141,37 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
             ) : (
               <>
                 <div className="space-y-2">
-                  {posts.map((post, i) => (
+                  {floodPosts.length > 0 && <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-300">Flood and weather posts</div>}
+                  {floodPosts.map((post, i) => (
                     <PostItem key={`${post.link}-${i}`} post={post} />
+                  ))}
+                  {otherPosts.length > 0 && <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground pt-1">Other local posts</div>}
+                  {otherPosts.map((post, i) => (
+                    <PostItem key={`${post.link}-other-${i}`} post={post} />
                   ))}
                 </div>
 
-                <div className="mt-3 flex items-center justify-between">
-                  <a
-                    href="https://www.reddit.com/r/binghamton/new/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-primary hover:underline flex items-center gap-1"
-                  >
-                    View more on Reddit
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
+                <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex gap-3">
+                    <a
+                      href="https://www.reddit.com/r/binghamton/new/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-primary hover:underline flex items-center gap-1"
+                    >
+                      r/binghamton
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                    <a
+                      href="https://www.reddit.com/r/BroomeCounty/new/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-primary hover:underline flex items-center gap-1"
+                    >
+                      r/BroomeCounty
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
                   {feedData?.lastUpdated && (
                     <span className="text-[11px] text-muted-foreground/60">
                       Updated {formatTimeAgo(feedData.lastUpdated)}
@@ -159,7 +180,7 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
                 </div>
 
                 <p className="mt-2 text-[10px] text-muted-foreground/50 leading-snug">
-                  Aggregated from public Reddit feeds. Names anonymized.
+                  Public Reddit posts from {feedData?.sources?.length ? feedData.sources.join(", ") : "r/binghamton and nearby communities"}. Names anonymized. These are not official warnings.
                 </p>
               </>
             )}
