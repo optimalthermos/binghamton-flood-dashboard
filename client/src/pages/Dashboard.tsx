@@ -957,7 +957,7 @@ function RadarPanel() {
       <CardContent>
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
           <img
-            src={`/api/radar-image?_=${refreshKey}`}
+            src={`/api/radar-image?fresh=1&_=${refreshKey}`}
             alt="NEXRAD Radar — Southern Tier NY"
             className="w-full h-auto"
             style={{ minHeight: 200 }}
@@ -1612,9 +1612,10 @@ function BasinStatePanel({ groundwater, soilMoisture, surfaceObs }: {
 }
 
 // === V4: Combined Imagery Panel (Radar + PWAT + 850mb tabs) ===
-function ImageryPanel({ gauges }: { gauges?: GaugeData[] }) {
+function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refreshToken?: number }) {
   const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
   const [refreshKey, setRefreshKey] = useState(0);
+  useEffect(() => { if (refreshToken) setRefreshKey(k => k + 1); }, [refreshToken]);
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [activeTab, refreshKey]);
 
@@ -1650,7 +1651,7 @@ function ImageryPanel({ gauges }: { gauges?: GaugeData[] }) {
           {activeTab === "radar" && <BasinRadar gauges={gauges} refreshKey={refreshKey} />}
           {!failed && (activeTab === "pwat" || activeTab === "850mb") && (
             <img
-              src={apiUrl(`/api/spc-images/${activeTab}?_=${refreshKey}`)}
+              src={apiUrl(`/api/spc-images/${activeTab}?fresh=1&_=${refreshKey}`)}
               onError={() => setFailed(true)}
               alt={activeTab === "pwat" ? "Precipitable Water" : "850mb Analysis"}
               className="w-full h-auto"
@@ -1955,7 +1956,7 @@ export default function Dashboard() {
         <DashboardHeader
           countdown={countdown}
           lastRefresh={lastRefresh}
-          onRefresh={refreshAll}
+          onRefresh={() => refreshAll(true)}
           isLoading={isAnyLoading}
           connectionStatus={connectionStatus}
           isDark={isDark}
@@ -2017,6 +2018,7 @@ export default function Dashboard() {
               <WebcamPanel
                 webcamsData={webcams.data}
                 isLoading={webcams.isLoading}
+                refreshToken={lastRefresh.getTime()}
               />
 
               {/* Confluence Hydraulics */}
@@ -2070,7 +2072,7 @@ export default function Dashboard() {
               <WeatherPanel weather={weather.data} />
 
               {/* V4: Imagery Panel (tabbed Radar / PWAT / 850mb) */}
-              <ImageryPanel gauges={gaugesResp?.gauges} />
+              <ImageryPanel gauges={gaugesResp?.gauges} refreshToken={lastRefresh.getTime()} />
 
               {/* V4: QPF + Atmospheric detail (from AtmosphericPanel, kept for QPF chart) */}
               <AtmosphericPanel

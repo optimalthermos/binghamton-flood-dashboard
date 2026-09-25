@@ -2,7 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles, officialCoordinate, officialImpacts, officialRecordCrest } from "./monitoring";
+import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles, officialCoordinate, officialImpacts, officialRecordCrest, clearVolatileOfficialCache } from "./monitoring";
+import { isWeatherReport } from "../shared/community";
 import { observationState, precipitationTotal } from "../shared/monitoring";
 import { buildFloodPathways } from "../shared/scenarios";
 import { createHash } from "crypto";
@@ -1183,13 +1184,13 @@ function hashUsername(username: string): string {
 }
 
 async function fetchCommunityFeed() {
+  const weatherQuery = "flood OR flooding OR rain OR weather OR storm OR snow OR river OR creek";
   const RSS_URLS = [
-    { name: "r/binghamton", url: "https://www.reddit.com/r/binghamton/new.rss?limit=15" },
-    { name: "r/BroomeCounty", url: "https://www.reddit.com/r/BroomeCounty/new.rss?limit=10" },
-    { name: "r/upstate_new_york flood search", url: "https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=flood+flooding+river+storm+binghamton&restrict_sr=on&sort=new&t=month&limit=10" },
+    { name: "r/binghamton", url: `https://www.reddit.com/r/binghamton/search.rss?q=${encodeURIComponent(weatherQuery)}&restrict_sr=on&sort=new&t=month&limit=15` },
+    { name: "r/BroomeCounty", url: `https://www.reddit.com/r/BroomeCounty/search.rss?q=${encodeURIComponent(weatherQuery)}&restrict_sr=on&sort=new&t=month&limit=10` },
+    { name: "r/upstate_new_york", url: `https://www.reddit.com/r/binghamton+upstate_new_york/search.rss?q=${encodeURIComponent(weatherQuery)}&restrict_sr=on&sort=new&t=month&limit=10` },
   ];
 
-  const FLOOD_KEYWORDS = /\b(flood(?:ing|ed)?|river|water level|storm|road closed|flood warning|evacuat(?:e|ion)|dam)\b/i;
   const IMAGE_SOURCES = /i\.redd\.it|preview\.redd\.it|imgur|\.(jpg|jpeg|png)/i;
 
   function extractTagText(xml: string, tag: string): string {
@@ -1276,7 +1277,8 @@ async function fetchCommunityFeed() {
 
         const hasImage = IMAGE_SOURCES.test(content);
         const imageUrl = hasImage ? extractFirstImageUrl(content) : null;
-        const isFloodRelated = FLOOD_KEYWORDS.test(title) || FLOOD_KEYWORDS.test(content);
+        const isFloodRelated = isWeatherReport(`${title} ${content}`);
+        if (!isFloodRelated) continue;
         const anonymizedAuthor = authorName ? `User-${hashUsername(authorName)}` : "User-????";
         const subreddit = extractSubreddit(linkHref);
 
@@ -1302,9 +1304,8 @@ async function fetchCommunityFeed() {
   if (!successfulFeeds) throw new Error("Community feeds unavailable");
   allPosts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  const floodPosts = allPosts.filter(p => p.isFloodRelated);
-  const nonFloodPosts = allPosts.filter(p => !p.isFloodRelated);
-  const sorted = [...floodPosts, ...nonFloodPosts];
+  const floodPosts = allPosts;
+  const sorted = allPosts;
 
   return {
     posts: sorted,
@@ -1330,9 +1331,20 @@ export async function registerRoutes(
   // Helper for standard cached route
   const inFlight = new Map<string, Promise<any>>();
   function cachedRoute<T>(path: string, cacheKey: string, fetcher: () => Promise<T>, ttl = CACHE_TTL) {
-    app.get(path, async (_req, res) => {
+    app.get(path, async (req, res) => {
       try {
-        const cached = getCached<T>(cacheKey, ttl);
+        const force = req.query.fresh === "1";
+        if (force) {
+          delete cache[cacheKey];
+          if (cacheKey === "predictive-outlook") {
+            delete cache.gauges;
+            delete cache.weather;
+            delete cache.groundwater;
+            delete cache["gridpoint-data"];
+          }
+          clearVolatileOfficialCache();
+        }
+        const cached = force ? null : getCached<T>(cacheKey, ttl);
         res.set("Cache-Control", "no-store");
         if (cached && !cached.stale) return res.json({ ...cached.data as any, retrievedAt: new Date(cache[cacheKey].timestamp).toISOString() });
         if (!inFlight.has(cacheKey)) {
@@ -1365,10 +1377,10 @@ export async function registerRoutes(
   cachedRoute("/api/predictive-outlook", "predictive-outlook", fetchPredictiveOutlook, 5 * 60 * 1000);
 
   // Image proxy endpoints
-  app.get("/api/radar-image", async (_req, res) => {
+  app.get("/api/radar-image", async (req, res) => {
     try {
       const cached = getCached<Buffer>("radar-img", IMAGE_CACHE_TTL);
-      if (cached && !cached.stale) {
+      if (req.query.fresh !== "1" && cached && !cached.stale) {
         res.set("Content-Type", "image/png");
         return res.send(cached.data);
       }
@@ -1421,7 +1433,7 @@ export async function registerRoutes(
     if (!sourceUrl) return res.status(404).json({ error: "Unknown USGS camera location" });
 
     const cached = usgsCamCache[location];
-    if (cached && Date.now() - cached.timestamp < USGS_CAM_CACHE_TTL) {
+    if (req.query.fresh !== "1" && cached && Date.now() - cached.timestamp < USGS_CAM_CACHE_TTL) {
       res.set("Content-Type", "image/jpeg");
       res.set("Cache-Control", "no-store");
       if (cached.publishedAt) res.set("Last-Modified", cached.publishedAt);
@@ -1490,10 +1502,10 @@ export async function registerRoutes(
   });
 
   // V5: NWS webcam proxy
-  app.get("/api/webcams/nws", async (_req, res) => {
+  app.get("/api/webcams/nws", async (req, res) => {
     try {
       const cached = getCached<{ body: Buffer; publishedAt: string | null }>("nws-webcam-img", 3 * 60 * 1000);
-      if (cached && !cached.stale) {
+      if (req.query.fresh !== "1" && cached && !cached.stale) {
         res.set("Content-Type", "image/jpeg");
         res.set("Cache-Control", "no-store");
         if (cached.data.publishedAt) res.set("Last-Modified", cached.data.publishedAt);
@@ -1519,7 +1531,7 @@ export async function registerRoutes(
     const sourceUrl = `https://511ny.org/map/Cctv/${cameraId}`;
     try {
       const cached = getCached<{ body: Buffer; type: string; publishedAt: string | null }>(`dot-cam-${cameraId}`, 60_000);
-      if (cached && !cached.stale) {
+      if (req.query.fresh !== "1" && cached && !cached.stale) {
         res.set("Content-Type", cached.data.type);
         if (cached.data.publishedAt) res.set("Last-Modified", cached.data.publishedAt);
         return res.send(cached.data.body);
@@ -1556,7 +1568,7 @@ export async function registerRoutes(
     try {
       const cacheKey = `spc-${type}`;
       const cached = getCached<Buffer>(cacheKey, SPC_CACHE_TTL);
-      if (cached && !cached.stale) {
+      if (req.query.fresh !== "1" && cached && !cached.stale) {
         res.set("Content-Type", "image/gif");
         return res.send(cached.data);
       }

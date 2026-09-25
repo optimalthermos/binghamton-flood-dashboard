@@ -96,9 +96,7 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
   const MAX_VISIBLE = 10;
 
   const posts = feedData?.posts?.slice(0, MAX_VISIBLE) || [];
-  const floodPosts = posts.filter(post => post.isFloodRelated);
-  const otherPosts = posts.filter(post => !post.isFloodRelated);
-  const floodCount = feedData?.floodPostCount || 0;
+  const floodCount = posts.length;
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -110,7 +108,7 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
               Community Reports
               {floodCount > 0 && (
                 <Badge className="ml-1 text-[10px] px-1.5 py-0 h-4 bg-blue-500/20 text-blue-300 border-blue-500/30">
-                  {floodCount} flood-related
+                  {floodCount} weather
                 </Badge>
               )}
             </CardTitle>
@@ -136,18 +134,13 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
               </div>
             ) : posts.length === 0 ? (
               <div className="text-sm text-muted-foreground text-center py-6">
-                No community posts available
+                No recent local posts about flooding, rain, or weather.
               </div>
             ) : (
               <>
                 <div className="space-y-2">
-                  {floodPosts.length > 0 && <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-300">Flood and weather posts</div>}
-                  {floodPosts.map((post, i) => (
+                  {posts.map((post, i) => (
                     <PostItem key={`${post.link}-${i}`} post={post} />
-                  ))}
-                  {otherPosts.length > 0 && <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground pt-1">Other local posts</div>}
-                  {otherPosts.map((post, i) => (
-                    <PostItem key={`${post.link}-other-${i}`} post={post} />
                   ))}
                 </div>
 
@@ -180,7 +173,7 @@ export function CommunityFeedPanel({ feedData, isLoading }: CommunityFeedPanelPr
                 </div>
 
                 <p className="mt-2 text-[10px] text-muted-foreground/50 leading-snug">
-                  Public Reddit posts from {feedData?.sources?.length ? feedData.sources.join(", ") : "r/binghamton and nearby communities"}. Names anonymized. These are not official warnings.
+                  Public Reddit posts from {feedData?.sources?.length ? feedData.sources.join(", ") : "r/binghamton and nearby communities"} about flooding, rain, or weather. Names anonymized. These are not official warnings.
                 </p>
               </>
             )}
