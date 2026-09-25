@@ -57,6 +57,29 @@ export function officialThresholds(meta: any) {
   );
 }
 
+export function officialCoordinate(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function officialImpacts(meta: any): Array<{ stage: number; statement: string }> {
+  if (meta?.flood?.stageUnits !== "ft" || !Array.isArray(meta?.flood?.impacts)) return [];
+  return meta.flood.impacts
+    .filter((impact: any) => typeof impact?.stage === "number" && impact.stage > -999
+      && typeof impact?.statement === "string" && impact.statement.trim())
+    .map((impact: any) => ({ stage: impact.stage, statement: impact.statement.trim() }))
+    .sort((a: { stage: number }, b: { stage: number }) => a.stage - b.stage);
+}
+
+export function officialRecordCrest(meta: any): { stage: number; occurredTime: string } | null {
+  if (meta?.flood?.stageUnits !== "ft" || !Array.isArray(meta?.flood?.crests?.historic)) return null;
+  let best: { stage: number; occurredTime: string } | null = null;
+  for (const crest of meta.flood.crests.historic) {
+    if (typeof crest?.stage !== "number" || crest.stage <= -999 || typeof crest?.occurredTime !== "string") continue;
+    if (!best || crest.stage > best.stage) best = { stage: crest.stage, occurredTime: crest.occurredTime };
+  }
+  return best;
+}
+
 export async function weatherPoint() {
   const data = await officialJSON("https://api.weather.gov/points/42.0987,-75.9180", 86400_000);
   if (!data.properties?.forecastGridData) throw new Error("NWS point metadata unavailable");

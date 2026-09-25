@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles } from "./monitoring";
+import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles, officialCoordinate, officialImpacts, officialRecordCrest } from "./monitoring";
 import { observationState, precipitationTotal } from "../shared/monitoring";
 import { buildFloodPathways } from "../shared/scenarios";
 import { createHash } from "crypto";
@@ -299,6 +299,10 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
         lastUpdated: lastElev?.timestamp || null,
         trend: computeTrend(elevTS),
         thresholds: officialThresholds(meta),
+        latitude: officialCoordinate(meta?.latitude),
+        longitude: officialCoordinate(meta?.longitude),
+        impacts: officialImpacts(meta),
+        recordCrest: officialRecordCrest(meta),
         isBinghamton: false,
         isOffline: !gd || elevTS.length === 0,
         isReservoir: true,
@@ -329,6 +333,10 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
       lastUpdated: lastStage?.timestamp || lastFlow?.timestamp || null,
       trend: computeTrend(stageTS),
       thresholds: officialThresholds(meta),
+      latitude: officialCoordinate(meta?.latitude),
+      longitude: officialCoordinate(meta?.longitude),
+      impacts: officialImpacts(meta),
+      recordCrest: officialRecordCrest(meta),
       isBinghamton: config.isBinghamton || false,
       isOffline,
       isReservoir: false,
@@ -1158,8 +1166,8 @@ async function fetch511TrafficCameras() {
 }
 
 // USGS and Mesonet camera image cache (30 min TTL)
-const USGS_CAM_CACHE_TTL = 30 * 60 * 1000;
-const usgsCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
+const USGS_CAM_CACHE_TTL = 5 * 60 * 1000;
+const usgsCamCache: Record<string, { buf: Buffer; timestamp: number; publishedAt: string | null }> = {};
 const mesonetCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
 
 const USGS_CAM_URLS: Record<string, string> = {
@@ -1365,7 +1373,7 @@ export async function registerRoutes(
         return res.send(cached.data);
       }
       const imgRes = await fetchWithUA(
-        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q-900913&SRS=EPSG:4326&BBOX=-76.8,41.3,-74.8,42.8&WIDTH=600&HEIGHT=400&FORMAT=image/png&TRANSPARENT=TRUE"
+        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q&SRS=EPSG:4326&BBOX=-76.55,41.75,-75.25,42.45&WIDTH=768&HEIGHT=420&FORMAT=image/png&TRANSPARENT=TRUE"
       );
       if (!imgRes.ok) throw new Error(`Radar returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
@@ -1384,13 +1392,13 @@ export async function registerRoutes(
       imageUrl: string; refreshInterval: number; description: string; sourceUrl?: string; publishedAt?: string | null;
     }> = [
       // River cameras (USGS — most valuable for flood monitoring)
-      { id: "usgs-norwich-staff", name: "Chenango River at Norwich — Staff Gauge", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-staff", refreshInterval: 1800, description: "USGS river-level reference view; check image timestamp" },
-      { id: "usgs-norwich-downstream", name: "Chenango River at Norwich — Downstream", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-downstream", refreshInterval: 1800, description: "USGS downstream view; check image timestamp" },
-      { id: "usgs-towanda", name: "Susquehanna River at Towanda, PA", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/towanda", refreshInterval: 1800, description: "Downstream basin context; periodic USGS image" },
-      { id: "usgs-oxford", name: "Chenango River at Oxford", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/oxford", refreshInterval: 3600, description: "USGS 01505010 — upstream Chenango, bridge view" },
-      { id: "usgs-sherburne", name: "Chenango River at Sherburne", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/sherburne", refreshInterval: 3600, description: "USGS 01505000 — upstream Chenango, river bend" },
+      { id: "usgs-norwich-staff", name: "Chenango River at Norwich — Staff Gauge", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-staff", refreshInterval: 300, description: "USGS river-level reference view; the label uses the image's published time" },
+      { id: "usgs-norwich-downstream", name: "Chenango River at Norwich — Downstream", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-downstream", refreshInterval: 300, description: "USGS downstream view; the label uses the image's published time" },
+      { id: "usgs-towanda", name: "Susquehanna River at Towanda, PA", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/towanda", refreshInterval: 300, description: "Downstream basin context; periodic USGS image" },
+      { id: "usgs-oxford", name: "Chenango River at Oxford", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/oxford", refreshInterval: 300, description: "USGS 01505010 — upstream Chenango, bridge view" },
+      { id: "usgs-sherburne", name: "Chenango River at Sherburne", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/sherburne", refreshInterval: 300, description: "USGS 01505000 — upstream Chenango, river bend" },
       // Weather cameras
-      { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, category: "weather" as const, imageUrl: "/api/webcams/nws", refreshInterval: 600, description: "South view from NWS BGM office" },
+      { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, category: "weather" as const, imageUrl: "/api/webcams/nws", refreshInterval: 180, description: "South view from NWS BGM office" },
     ];
     try {
       cameras.push(...await fetch511TrafficCameras());
@@ -1404,7 +1412,7 @@ export async function registerRoutes(
       } catch { Object.assign(cam, { publishedAt: null, sourceUrl: USGS_CAM_URLS[key] }); }
     }));
     return { cameras };
-  }, 10 * 60 * 1000);
+  }, 60_000);
 
   // V6: USGS river webcam proxy (direct S3 JPEG, cache 30 min)
   app.get("/api/webcams/usgs/:location", async (req, res) => {
@@ -1415,6 +1423,8 @@ export async function registerRoutes(
     const cached = usgsCamCache[location];
     if (cached && Date.now() - cached.timestamp < USGS_CAM_CACHE_TTL) {
       res.set("Content-Type", "image/jpeg");
+      res.set("Cache-Control", "no-store");
+      if (cached.publishedAt) res.set("Last-Modified", cached.publishedAt);
       return res.send(cached.buf);
     }
 
@@ -1422,8 +1432,11 @@ export async function registerRoutes(
       const imgRes = await fetchWithUA(sourceUrl, 12000);
       if (!imgRes.ok) throw new Error(`USGS camera returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
-      usgsCamCache[location] = { buf, timestamp: Date.now() };
+      const publishedAt = imgRes.headers.get("last-modified");
+      usgsCamCache[location] = { buf, timestamp: Date.now(), publishedAt };
       res.set("Content-Type", "image/jpeg");
+      res.set("Cache-Control", "no-store");
+      if (publishedAt) res.set("Last-Modified", publishedAt);
       return res.send(buf);
     } catch (err: any) {
       return res.status(502).json({ error: err.message });
@@ -1479,17 +1492,22 @@ export async function registerRoutes(
   // V5: NWS webcam proxy
   app.get("/api/webcams/nws", async (_req, res) => {
     try {
-      const cached = getCached<Buffer>("nws-webcam-img", IMAGE_CACHE_TTL);
+      const cached = getCached<{ body: Buffer; publishedAt: string | null }>("nws-webcam-img", 3 * 60 * 1000);
       if (cached && !cached.stale) {
         res.set("Content-Type", "image/jpeg");
-        return res.send(cached.data);
+        res.set("Cache-Control", "no-store");
+        if (cached.data.publishedAt) res.set("Last-Modified", cached.data.publishedAt);
+        return res.send(cached.data.body);
       }
       const imgRes = await fetchWithUA("https://www.weather.gov/images/bgm/southview.jpg", 12000);
       if (!imgRes.ok) throw new Error(`NWS webcam returned ${imgRes.status}`);
-      const buf = Buffer.from(await imgRes.arrayBuffer());
-      setCache("nws-webcam-img", buf);
+      const body = Buffer.from(await imgRes.arrayBuffer());
+      const publishedAt = imgRes.headers.get("last-modified");
+      setCache("nws-webcam-img", { body, publishedAt });
       res.set("Content-Type", "image/jpeg");
-      return res.send(buf);
+      res.set("Cache-Control", "no-store");
+      if (publishedAt) res.set("Last-Modified", publishedAt);
+      return res.send(body);
     } catch (err: any) {
       return res.status(502).json({ error: err.message });
     }

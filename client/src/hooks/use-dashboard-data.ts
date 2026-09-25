@@ -81,8 +81,8 @@ export function useDashboardData() {
   // V5: Webcam metadata + community feed
   const webcams = useQuery<any>({
     queryKey: ["/api/webcams"],
-    staleTime: 600000, // 10 min
-    refetchInterval: false,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
   });
 
   const communityFeed = useQuery<any>({

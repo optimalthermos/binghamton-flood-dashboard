@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { observationState, ageLabel, stageCategory, durationMs, precipitationTotal } from "../shared/monitoring";
-import { officialThresholds, parseObservedProduct } from "../server/monitoring";
+import { officialImpacts, officialRecordCrest, officialThresholds, parseObservedProduct } from "../server/monitoring";
 
 const now = Date.parse("2026-09-22T04:00:00Z");
 test("missing, offline, stale and future observations cannot be current", () => {
@@ -24,6 +24,21 @@ test("official metadata rejects sentinel values and incorrect units", () => {
   assert.deepEqual(officialThresholds({ flood: { stageUnits: "ft", categories: { action: { stage: 10 }, minor: { stage: -9999 }, major: { stage: 20 } } } }), { action: 10, major: 20 });
   assert.deepEqual(officialThresholds({ flood: { stageUnits: "m", categories: { action: { stage: 10 } } } }), {});
   assert.deepEqual(officialThresholds(null), {});
+  assert.deepEqual(officialImpacts({ flood: { stageUnits: "ft", impacts: [
+    { stage: 18, statement: "  Water reaches Front Street. " },
+    { stage: -9999, statement: "ignore" },
+    { stage: 14, statement: "Low spots flood." },
+    { stage: 12, statement: "" },
+  ] } }), [
+    { stage: 14, statement: "Low spots flood." },
+    { stage: 18, statement: "Water reaches Front Street." },
+  ]);
+  assert.deepEqual(officialImpacts({ flood: { stageUnits: "m", impacts: [{ stage: 14, statement: "no" }] } }), []);
+  assert.deepEqual(officialRecordCrest({ flood: { stageUnits: "ft", crests: { historic: [
+    { stage: 20, occurredTime: "2006-06-28T00:00:00Z" },
+    { stage: 25.73, occurredTime: "2011-09-08T20:00:00Z" },
+    { stage: -999, occurredTime: "1999-01-01T00:00:00Z" },
+  ] } } }), { stage: 25.73, occurredTime: "2011-09-08T20:00:00Z" });
 });
 test("rain windows exclude past rain and prorate crossing intervals", () => {
   const result = precipitationTotal([
