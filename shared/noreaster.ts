@@ -17,6 +17,6 @@ export function norEasterBrief(text: string): NorEasterBrief | null {
   if (!headline && !detail) return null;
   return {
     headline: headline.slice(0, 420),
-    detail: detail.slice(0, 1600),
+    detail: detail.slice(0, 2500),
   };
 }
