@@ -88,6 +88,10 @@ export const forecastDataSchema = z.object({
       heading: z.string(),
       text: z.string(),
     })).optional(),
+    norEaster: z.object({
+      headline: z.string(),
+      detail: z.string(),
+    }).nullable().optional(),
   }),
   riverSummary: z.object({
     text: z.string(),

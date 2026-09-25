@@ -4,6 +4,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles, officialCoordinate, officialImpacts, officialRecordCrest, clearVolatileOfficialCache } from "./monitoring";
 import { isWeatherReport } from "../shared/community";
+import { norEasterBrief } from "../shared/noreaster";
 import { observationState, precipitationTotal } from "../shared/monitoring";
 import { buildFloodPathways } from "../shared/scenarios";
 import { createHash } from "crypto";
@@ -411,6 +412,7 @@ async function fetchForecast(): Promise<ForecastData> {
       sections: parsed.sections,
       rawText: cleanAfd.slice(0, 8000),
       issuedAt: parsed.issuedAt,
+      norEaster: norEasterBrief(cleanAfd),
     },
     riverSummary: {
       text: riverIssuedAt ? cleanRva.slice(0, 5000) : "",
@@ -1385,7 +1387,7 @@ export async function registerRoutes(
         return res.send(cached.data);
       }
       const imgRes = await fetchWithUA(
-        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q&SRS=EPSG:4326&BBOX=-76.55,41.75,-75.25,42.45&WIDTH=768&HEIGHT=420&FORMAT=image/png&TRANSPARENT=TRUE"
+        "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=nexrad-n0q&SRS=EPSG:4326&BBOX=-76.145,41.998,-75.322,42.353&WIDTH=768&HEIGHT=420&FORMAT=image/png&TRANSPARENT=TRUE"
       );
       if (!imgRes.ok) throw new Error(`Radar returned ${imgRes.status}`);
       const buf = Buffer.from(await imgRes.arrayBuffer());
