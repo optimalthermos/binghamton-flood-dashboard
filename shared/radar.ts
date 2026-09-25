@@ -1,6 +1,6 @@
 /** Binghamton gauge, just downstream of the Susquehanna–Chenango junction. */
 export const BASIN_CENTER = { latitude: 42.0925, longitude: -75.915 };
-export const RADAR_ZOOM = 9;
+export const RADAR_ZOOM = 10;
 export const RADAR_WIDTH = 768;
 export const RADAR_HEIGHT = 420;
 

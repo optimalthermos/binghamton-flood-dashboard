@@ -964,7 +964,7 @@ function RadarPanel() {
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           <div className="absolute bottom-1 left-1 text-[9px] bg-black/60 px-1.5 py-0.5 rounded text-white/70">
-            IEM NEXRAD | 41.3°N–42.8°N, 76.8°W–74.8°W
+            IEM NEXRAD centered on Binghamton
           </div>
         </div>
       </CardContent>
@@ -1659,7 +1659,7 @@ function ImageryPanel({ gauges }: { gauges?: GaugeData[] }) {
           )}
         </div>
         <p className="text-[10px] text-muted-foreground mt-1">
-          {activeTab === "radar" ? "Base reflectivity on a map centered on Binghamton, not a shifted regional slice." :
+          {activeTab === "radar" ? "Base reflectivity centered on Binghamton." :
            activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
            "850mb Wind/Temperature — SPC Mesoanalysis Sector 14 (NE US)"}
         </p>

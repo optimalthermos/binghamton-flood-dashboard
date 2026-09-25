@@ -57,7 +57,9 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
               title={`${gauge.name}: ${gauge.stage ?? "—"} ft`}
             >
               <div className={`h-2.5 w-2.5 rounded-full border border-white ${gauge.isBinghamton ? "bg-amber-400" : "bg-sky-400"}`} />
-              <div className="mt-0.5 whitespace-nowrap text-[9px] font-medium text-white drop-shadow">{gauge.name}</div>
+              {["01503500", "01503000", "01512500", "01513500", "01502731"].includes(gauge.id) && (
+                <div className="mt-0.5 whitespace-nowrap text-[9px] font-medium text-white drop-shadow">{gauge.name}</div>
+              )}
             </div>
           );
         })}
