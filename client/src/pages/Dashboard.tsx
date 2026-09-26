@@ -958,13 +958,13 @@ function RadarPanel() {
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
           <img
             src={`/api/radar-image?fresh=1&_=${refreshKey}`}
-            alt="NEXRAD Radar — Southern Tier NY"
+            alt="NEXRAD radar over Broome County, New York"
             className="w-full h-auto"
             style={{ minHeight: 200 }}
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           <div className="absolute bottom-1 left-1 text-[9px] bg-black/60 px-1.5 py-0.5 rounded text-white/70">
-            IEM NEXRAD centered on Binghamton
+            NEXRAD framed on Broome County, NY
           </div>
         </div>
       </CardContent>
@@ -1442,7 +1442,7 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
     { name: "NWS Gridpoint (BGM)", status: gridpoint.isError ? "error" : "ok", url: "https://api.weather.gov/points/42.0987,-75.9180", note: "Location-resolved QPF, dewpoint, temperature" },
     { name: "CPC Soil Moisture", status: soilMoisture.isError ? "error" : "ok", url: "https://www.cpc.ncep.noaa.gov/", note: "GeoTIFF percentile at Binghamton" },
     { name: "SPC Mesoanalysis", status: "unchecked", url: "https://www.spc.noaa.gov/exper/mesoanalysis/", note: "PWAT + 850mb images; check image availability" },
-    { name: "IEM NEXRAD Radar", status: "unchecked", url: "https://mesonet.agron.iastate.edu/", note: "Composite reflectivity; check image availability" },
+    { name: "IEM NEXRAD Radar", status: "unchecked", url: "https://mesonet.agron.iastate.edu/", note: "Reflectivity framed on Broome County, NY" },
     { name: "USGS Historical Stats", status: "unchecked", url: "https://waterservices.usgs.gov/nwis/stat/", note: "Daily flow percentiles; not monitored here" },
     { name: "511NY Cameras", status: "unchecked", url: "https://511ny.org/List/Cameras", note: "Basin traffic snapshots; publication time shown per image" },
     { name: "Reddit Community Feed", status: "unchecked", url: "https://www.reddit.com/r/binghamton/", note: "Community reports, not official warnings" },
@@ -1611,6 +1611,37 @@ function BasinStatePanel({ groundwater, soilMoisture, surfaceObs }: {
   );
 }
 
+function NorEasterPanel({ forecast, weather }: { forecast?: ForecastData; weather?: WeatherData }) {
+  const storm = forecast?.afd.norEaster;
+  if (!storm) return null;
+  const weekend = (weather?.forecast || []).filter(period => /saturday|sunday|monday/i.test(period.name)).slice(0, 6);
+  return (
+    <Card className="bg-card border-border">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Nor&apos;easter — NWS Binghamton</CardTitle>
+        <p className="text-[10px] text-muted-foreground">Issued {forecast?.afd.issuedAt}. Covers the Binghamton office area, including Broome County.</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {storm.headline && <p className="text-sm">{storm.headline}</p>}
+        {storm.detail && <p className="text-xs text-muted-foreground leading-relaxed">{storm.detail}</p>}
+        {weekend.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {weekend.map(period => (
+              <div key={period.name} className="rounded bg-accent/40 p-2 text-xs">
+                <div className="font-medium">{period.name}</div>
+                <div>{period.temp !== null ? `${period.temp}°` : "—"} · {period.shortForecast}</div>
+                {period.precipProbability !== null && period.precipProbability !== undefined && (
+                  <div className="text-muted-foreground">{period.precipProbability}% chance of precipitation</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // === V4: Combined Imagery Panel (Radar + PWAT + 850mb tabs) ===
 function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refreshToken?: number }) {
   const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
@@ -1660,7 +1691,7 @@ function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refr
           )}
         </div>
         <p className="text-[10px] text-muted-foreground mt-1">
-          {activeTab === "radar" ? "Base reflectivity centered on Binghamton." :
+          {activeTab === "radar" ? "Base reflectivity framed on Broome County, New York." :
            activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
            "850mb Wind/Temperature — SPC Mesoanalysis Sector 14 (NE US)"}
         </p>
@@ -2070,6 +2101,7 @@ export default function Dashboard() {
 
               {/* NWS Weather + Forecast */}
               <WeatherPanel weather={weather.data} />
+              <NorEasterPanel forecast={forecast.data} weather={weather.data} />
 
               {/* V4: Imagery Panel (tabbed Radar / PWAT / 850mb) */}
               <ImageryPanel gauges={gaugesResp?.gauges} refreshToken={lastRefresh.getTime()} />
