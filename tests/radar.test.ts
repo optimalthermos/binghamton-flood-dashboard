@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BASIN_CENTER, BROOME_COUNTY, fitCounty, markerPercent, radarLayer, radarOverlayUrl, radarTileUrl, viewExtent } from "../shared/radar";
+import { BASIN_CENTER, BROOME_COUNTY, fitCounty, markerPercent, radarLayer, radarOverlayUrl, radarTileUrl, stormApproachView, viewExtent } from "../shared/radar";
 
 test("radar view frames Broome County and leaves distant states outside", () => {
   const view = fitCounty();
@@ -16,6 +16,32 @@ test("radar view frames Broome County and leaves distant states outside", () => 
   const albany = markerPercent(42.6526, -73.7562, view);
   assert.ok(stateCollege.left < 0 || stateCollege.left > 100 || stateCollege.top < 0 || stateCollege.top > 100);
   assert.ok(albany.left < 0 || albany.left > 100 || albany.top < 0 || albany.top > 100);
+});
+
+test("storm radar stays centered on Binghamton and still excludes distant cities", () => {
+  const view = stormApproachView();
+  const extent = viewExtent(view);
+  const binghamton = markerPercent(BASIN_CENTER.latitude, BASIN_CENTER.longitude, view);
+  assert.ok(Math.abs(binghamton.left - 50) < 1);
+  assert.ok(Math.abs(binghamton.top - 50) < 1);
+  for (const corner of [
+    [BROOME_COUNTY.north, BROOME_COUNTY.west],
+    [BROOME_COUNTY.north, BROOME_COUNTY.east],
+    [BROOME_COUNTY.south, BROOME_COUNTY.east],
+    [BROOME_COUNTY.south, BROOME_COUNTY.west],
+  ]) {
+    const spot = markerPercent(corner[0], corner[1], view);
+    assert.ok(spot.left > 0 && spot.left < 100);
+    assert.ok(spot.top > 0 && spot.top < 100);
+  }
+  assert.ok(extent.east > BROOME_COUNTY.east);
+  const stateCollege = markerPercent(40.7934, -77.86, view);
+  const albany = markerPercent(42.6526, -73.7562, view);
+  assert.ok(stateCollege.left < 0 || stateCollege.left > 100 || stateCollege.top < 0 || stateCollege.top > 100);
+  assert.ok(albany.left < 0 || albany.left > 100 || albany.top < 0 || albany.top > 100);
+  const overlay = radarOverlayUrl(0, view);
+  assert.match(overlay, /SRS=EPSG%3A3857|SRS=EPSG:3857/);
+  assert.equal(overlay.includes("EPSG:4326"), false);
 });
 
 test("radar frames use the mercator loop layers and the geographic WMS layer is not mixed in", () => {
