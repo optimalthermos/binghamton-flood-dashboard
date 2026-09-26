@@ -102,9 +102,14 @@ export const weatherDataSchema = z.object({
     shortForecast: z.string(),
     detailedForecast: z.string(),
     isDaytime: z.boolean(),
+    precipProbability: z.number().nullable().optional(),
+    windSpeed: z.string().nullable().optional(),
+    windDirection: z.string().nullable().optional(),
   })),
   frostData: frostDataSchema.optional(),
   qpf: qpfDataSchema.nullable().optional(),
+  observedAt: z.string().nullable().optional(),
+  forecastIssuedAt: z.string().nullable().optional(),
   stale: z.boolean().optional(),
   error: z.string().optional(),
 });
@@ -130,6 +135,11 @@ export const newsItemSchema = z.object({
   url: z.string(),
   severity: z.enum(["warning", "watch", "advisory", "info"]).optional(),
   isNWSAlert: z.boolean().optional(),
+  event: z.string().optional(),
+  area: z.string().optional(),
+  expires: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  instruction: z.string().nullable().optional(),
 });
 
 export const newsDataSchema = z.object({
@@ -265,7 +275,15 @@ export const predictiveOutlookSchema = z.object({
     severity: z.string(),
     description: z.string(),
     peakComparison: z.string(),
+    gap: z.string().optional(),
   })),
+  pathways: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    state: z.enum(["quiet", "watch", "active", "unknown"]),
+    how: z.string(),
+    now: z.string(),
+  })).optional(),
   narrative: z.string(),
   triggers: z.object({
     escalation: z.string(),
@@ -300,6 +318,7 @@ export const communityPostSchema = z.object({
   imageUrl: z.string().nullable(),
   isFloodRelated: z.boolean(),
   anonymizedAuthor: z.string(),
+  excerpt: z.string().optional(),
 });
 
 export const communityFeedSchema = z.object({
@@ -307,6 +326,7 @@ export const communityFeedSchema = z.object({
   lastUpdated: z.string(),
   floodPostCount: z.number(),
   totalPosts: z.number(),
+  sources: z.array(z.string()).optional(),
 });
 
 export type Webcam = z.infer<typeof webcamSchema>;

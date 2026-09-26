@@ -70,33 +70,58 @@ function formatCountdown(secs: number): string {
 }
 
 // === Mini sparkline ===
-function MiniSparkline({ data, thresholdAction }: { data: Array<{ timestamp: string; value: number | null }>; thresholdAction?: number }) {
+const GAUGE_COLORS = [
+  "hsl(195, 80%, 55%)", "hsl(173, 58%, 50%)", "hsl(38, 90%, 60%)", "hsl(280, 60%, 60%)",
+  "hsl(145, 60%, 50%)", "hsl(12, 80%, 60%)", "hsl(220, 70%, 65%)", "hsl(50, 80%, 55%)",
+  "hsl(330, 60%, 62%)", "hsl(95, 45%, 50%)", "hsl(260, 40%, 70%)",
+];
+
+function MiniSparkline({ data, thresholdAction, sparkId }: { data: Array<{ timestamp: string; value: number | null }>; thresholdAction?: number; sparkId: string }) {
   const pts = data.filter(d => d.value !== null).slice(-72);
   if (pts.length < 2) return <div className="h-12 flex items-center justify-center text-xs text-muted-foreground">No data</div>;
   const chartData = pts.map(p => ({ t: new Date(p.timestamp).getTime(), v: p.value }));
+  const gradId = `spark-${sparkId}`;
   return (
     <ResponsiveContainer width="100%" height={48}>
       <AreaChart data={chartData} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
         <defs>
-          <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="hsl(195, 80%, 45%)" stopOpacity={0.3} />
             <stop offset="95%" stopColor="hsl(195, 80%, 45%)" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <Area type="monotone" dataKey="v" stroke="hsl(195, 80%, 45%)" fill="url(#sparkGrad)" strokeWidth={1.5} dot={false} />
+        <Area type="monotone" dataKey="v" stroke="hsl(195, 80%, 45%)" fill={`url(#${gradId})`} strokeWidth={1.5} dot={false} isAnimationActive />
         {thresholdAction && <ReferenceLine y={thresholdAction} stroke="hsl(38, 90%, 55%)" strokeDasharray="3 3" strokeWidth={1} />}
       </AreaChart>
     </ResponsiveContainer>
   );
 }
 
+function StageTrack({ stage, action, minor }: { stage: number | null; action?: number; minor?: number }) {
+  const ceiling = minor || (action ? action * 1.2 : null);
+  if (stage === null || !ceiling || ceiling <= 0) return null;
+  const pct = Math.max(2, Math.min(100, (stage / ceiling) * 100));
+  const actionPct = action ? Math.max(0, Math.min(100, (action / ceiling) * 100)) : null;
+  const hot = action !== undefined && stage >= action;
+  return (
+    <div className="relative mt-2 h-1.5 rounded-full bg-muted/60" title={action ? `Action stage ${action} ft` : undefined}>
+      <div className={`stage-fill absolute inset-y-0 left-0 rounded-full ${hot ? "bg-red-400" : "bg-primary"}`} style={{ width: `${pct}%` }} />
+      {actionPct !== null && <div className="absolute inset-y-0 w-px bg-amber-400" style={{ left: `${actionPct}%` }} />}
+    </div>
+  );
+}
+
 // === Header ===
-function DashboardHeader({ countdown, lastRefresh, onRefresh, isLoading, connectionStatus, isDark, toggleDark }: {
+function DashboardHeader({ countdown, lastRefresh, onRefresh, isLoading, connectionStatus, isDark, toggleDark, crestPct, crestLabel, basinTrend }: {
   countdown: number; lastRefresh: Date; onRefresh: () => void; isLoading: boolean;
   connectionStatus: "live" | "stale" | "offline"; isDark: boolean; toggleDark: () => void;
+  crestPct: number | null; crestLabel: string; basinTrend: string;
 }) {
   const statusColors = { live: "bg-emerald-400", stale: "bg-amber-400", offline: "bg-red-500" };
   const statusLabels = { live: "Live", stale: "Stale", offline: "Offline" };
+  const waveClass = basinTrend === "Loading" ? "header-river-loading" : basinTrend === "Draining" ? "header-river-draining" : "";
+  const waveFill = basinTrend === "Loading" ? "hsl(12, 80%, 55%)" : basinTrend === "Draining" ? "hsl(173, 58%, 45%)" : "hsl(195, 80%, 45%)";
+  const waveHeight = crestPct === null ? 8 : Math.max(6, Math.min(18, 6 + (crestPct / 100) * 12));
 
   return (
     <header className="border-b border-border bg-card px-4 py-3">
@@ -106,6 +131,17 @@ function DashboardHeader({ countdown, lastRefresh, onRefresh, isLoading, connect
           <div>
             <h1 className="text-lg font-bold tracking-tight">BGM Flood Monitor</h1>
             <p className="text-xs text-muted-foreground">Binghamton Basin Compound Flood Risk</p>
+            <div className={`header-river mt-1 w-40 ${waveClass}`} aria-hidden="true">
+              <svg viewBox="0 0 480 22" preserveAspectRatio="none">
+                <path
+                  d={`M0 ${22 - waveHeight} Q 20 ${22 - waveHeight - 4} 40 ${22 - waveHeight} T 80 ${22 - waveHeight} T 120 ${22 - waveHeight} T 160 ${22 - waveHeight} T 200 ${22 - waveHeight} T 240 ${22 - waveHeight} V 22 H 0 Z`}
+                  fill={waveFill} opacity="0.85" />
+                <path
+                  d={`M240 ${22 - waveHeight} Q 260 ${22 - waveHeight - 4} 280 ${22 - waveHeight} T 320 ${22 - waveHeight} T 360 ${22 - waveHeight} T 400 ${22 - waveHeight} T 440 ${22 - waveHeight} T 480 ${22 - waveHeight} V 22 H 240 Z`}
+                  fill={waveFill} opacity="0.85" />
+              </svg>
+            </div>
+            <p className="text-[10px] text-muted-foreground">{crestLabel}</p>
           </div>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -252,8 +288,18 @@ function KPICards({ gaugesResp, weather, outlookData }: { gaugesResp: GaugesResp
               <span className="text-xs text-muted-foreground">{kpi.label}</span>
               <span className={kpi.color}>{kpi.icon}</span>
             </div>
-            <div className={`text-xl font-bold ${kpi.color}`}>{kpi.value}</div>
+            <div className={`text-xl font-bold tabular-nums ${kpi.color}`}>{kpi.value}</div>
             <div className="text-xs text-muted-foreground truncate">{kpi.sub}</div>
+            {kpi.label === "Highest Stage" && highestPct.action > 0 && (
+              <div className="relative mt-2 h-1.5 rounded-full bg-muted/60">
+                <div className="stage-fill absolute inset-y-0 left-0 rounded-full bg-primary" style={{ width: `${Math.max(4, Math.min(100, highestPct.pct))}%` }} />
+              </div>
+            )}
+            {kpi.label === "Risk Score" && riskScore !== null && (
+              <div className="relative mt-2 h-1.5 rounded-full bg-muted/60">
+                <div className={`stage-fill absolute inset-y-0 left-0 rounded-full ${riskLevel === "HIGH" ? "bg-red-400" : riskLevel === "ELEVATED" ? "bg-orange-400" : riskLevel === "MODERATE" ? "bg-amber-400" : "bg-emerald-400"}`} style={{ width: `${Math.max(4, Math.min(100, riskScore))}%` }} />
+              </div>
+            )}
           </CardContent>
         </Card>
       ))}
@@ -354,7 +400,8 @@ function ReservoirCard({ gauge }: { gauge: GaugeData }) {
           </div>
           <div>
             <div className="text-xs text-muted-foreground mb-1">3-Day Pool Elevation</div>
-            <MiniSparkline data={gauge.stageTimeSeries} />
+            <MiniSparkline data={gauge.stageTimeSeries} sparkId={gauge.id} />
+            <StageTrack stage={gauge.poolElevation ?? null} action={gauge.thresholds.action} minor={gauge.thresholds.minor} />
             <div className="text-xs text-muted-foreground mt-1">
               <Clock className="h-3 w-3 inline mr-0.5" />
               {formatTimeAgo(gauge.lastUpdated)}
@@ -493,7 +540,8 @@ function GaugeCard({ gauge, expanded, onToggle, ensembleBounds, historicalStat }
           </div>
         </div>
         <div className="mt-2">
-          <MiniSparkline data={gauge.stageTimeSeries} thresholdAction={gauge.thresholds.action} />
+          <MiniSparkline data={gauge.stageTimeSeries} thresholdAction={gauge.thresholds.action} sparkId={gauge.id} />
+          <StageTrack stage={gauge.stage} action={gauge.thresholds.action} minor={gauge.thresholds.minor} />
         </div>
         {expanded && (
           <div className="mt-3 pt-3 border-t border-border">
@@ -570,7 +618,7 @@ function StageChart({ gauges, ensembleBounds }: { gauges: GaugeData[]; ensembleB
     return row;
   });
 
-  const colors = ["hsl(195, 80%, 55%)", "hsl(173, 58%, 50%)", "hsl(38, 90%, 60%)", "hsl(280, 60%, 60%)", "hsl(145, 60%, 50%)"];
+  const colors = GAUGE_COLORS;
 
   // Collect ensemble p10 lines for displayed gauges
   const ensembleLines: Array<{ value: number; label: string; color: string }> = [];
@@ -602,7 +650,7 @@ function StageChart({ gauges, ensembleBounds }: { gauges: GaugeData[]; ensembleB
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {online.map((g, i) => (
               <Line key={g.id} type="monotone" dataKey={g.name} stroke={colors[i % colors.length]}
-                strokeWidth={2} dot={false} connectNulls />
+                strokeWidth={2} dot={false} connectNulls isAnimationActive animationDuration={700} />
             ))}
             {ensembleLines.map((el, i) => (
               <ReferenceLine key={`ens-${i}`} y={el.value} stroke={el.color} strokeDasharray="4 6" strokeWidth={1}
@@ -616,6 +664,7 @@ function StageChart({ gauges, ensembleBounds }: { gauges: GaugeData[]; ensembleB
 }
 
 function FlowChart({ gauges, ensembleData }: { gauges: GaugeData[]; ensembleData?: any }) {
+  const [showEnsembles, setShowEnsembles] = useState(false);
   const online = gauges.filter(g => !g.isOffline && !g.isReservoir && g.flowTimeSeries.length > 0);
   if (online.length === 0) return null;
 
@@ -642,7 +691,7 @@ function FlowChart({ gauges, ensembleData }: { gauges: GaugeData[]; ensembleData
     return row;
   });
 
-  const colors = ["hsl(195, 80%, 55%)", "hsl(173, 58%, 50%)", "hsl(38, 90%, 60%)", "hsl(280, 60%, 60%)", "hsl(145, 60%, 50%)"];
+  const colors = GAUGE_COLORS;
 
   return (
     <Card className="bg-card border-border">
@@ -663,21 +712,44 @@ function FlowChart({ gauges, ensembleData }: { gauges: GaugeData[]; ensembleData
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {online.map((g, i) => (
               <Line key={g.id} type="monotone" dataKey={g.name} stroke={colors[i % colors.length]}
-                strokeWidth={2} dot={false} connectNulls />
+                strokeWidth={2} dot={false} connectNulls isAnimationActive animationDuration={700} />
             ))}
           </LineChart>
         </ResponsiveContainer>
         {ensembleData?.flowEnsembles?.length > 0 && (
-          <details className="mt-3 border-t border-border pt-2 text-xs">
-            <summary className="cursor-pointer text-primary py-2">NOAA HEFS ensemble guidance · next 72h</summary>
-            <p className="text-muted-foreground mb-2">Highest pointwise 10% / 50% / 90% exceedance guidance, cfs. These are not crest probabilities or stage heights.</p>
-            {ensembleData.flowEnsembles.map((site: any) => <div key={site.id} className="py-2 border-b border-border">
-              <div className="font-medium">{site.name}</div>
-              <div>{site.stale || !site.points.length ? "Current guidance unavailable" :
-                ["p10", "p50", "p90"].map(key => Math.max(...site.points.map((p: any) => p[key])).toLocaleString(undefined, { maximumFractionDigits: 0 })).join(" / ") + " cfs"}</div>
-              <div className="text-muted-foreground">Issued: {site.issuedAt ? new Date(site.issuedAt).toLocaleString() : "not reported"}</div>
-            </div>)}
-          </details>
+          <div className="mt-3 border-t border-border pt-2 text-xs">
+            <button type="button" className="text-primary py-2" onClick={() => setShowEnsembles(v => !v)}>
+              {showEnsembles ? "Hide" : "Show"} NOAA HEFS flow guidance · next 72h
+            </button>
+            {showEnsembles && (
+              <>
+                <p className="text-muted-foreground mb-2">10% / 50% / 90% exceedance flow, in cfs. These are not crest probabilities or stage heights.</p>
+                {ensembleData.flowEnsembles.map((site: any) => {
+                  const points = (site.points || []).map((p: any) => ({ time: new Date(p.time).getTime(), p10: p.p10, p50: p.p50, p90: p.p90 }));
+                  return (
+                    <div key={site.id} className="py-2 border-b border-border">
+                      <div className="font-medium">{site.name}</div>
+                      <div className="text-muted-foreground">Issued: {site.issuedAt ? new Date(site.issuedAt).toLocaleString() : "not reported"}</div>
+                      {site.stale || points.length < 2 ? <div>Current guidance unavailable</div> : (
+                        <ResponsiveContainer width="100%" height={90}>
+                          <LineChart data={points} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                            <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} hide />
+                            <RechartsTooltip
+                              contentStyle={{ background: "hsl(210, 20%, 11%)", border: "1px solid hsl(210, 20%, 20%)", borderRadius: 8, fontSize: 11 }}
+                              labelFormatter={(v) => new Date(v as number).toLocaleString()}
+                              formatter={(v: any, name: any) => [`${Math.round(Number(v)).toLocaleString()} cfs`, name]} />
+                            <Line type="monotone" dataKey="p90" stroke="hsl(210, 15%, 55%)" strokeWidth={1} dot={false} name="90%" />
+                            <Line type="monotone" dataKey="p50" stroke="hsl(195, 80%, 55%)" strokeWidth={2} dot={false} name="50%" />
+                            <Line type="monotone" dataKey="p10" stroke="hsl(12, 80%, 60%)" strokeWidth={1} dot={false} name="10%" />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -723,7 +795,7 @@ function GroundwaterPanel({ data }: { data?: GroundwaterData }) {
         {data.timeSeries.length > 0 && (
           <div className="mt-2">
             <div className="text-[10px] text-muted-foreground mb-1">7-Day Water Table</div>
-            <MiniSparkline data={data.timeSeries} />
+            <MiniSparkline data={data.timeSeries} sparkId="groundwater" />
           </div>
         )}
       </CardContent>
@@ -1020,13 +1092,13 @@ function CompoundRiskPanel({ gauges, weather, groundwater, soilMoisture }: {
   };
 
   const riskFactors = [
-    { label: "Soil saturation", status: anyAboveAction ? "HIGH — elevated readings" : anyNearAction ? "MODERATE — near action" : "Normal", active: anyAboveAction || anyNearAction },
-    { label: "Groundwater", status: gwSaturated ? `SHALLOW — ${groundwater?.depth?.toFixed(1)}ft to water table` : groundwater?.depth !== null ? `${groundwater?.depth?.toFixed(1)}ft — capacity available` : "Unknown", active: !!gwSaturated },
-    { label: "Soil moisture", status: soilWet ? `${soilMoisture?.percentile?.toFixed(0)}th pct — primed for runoff` : soilMoisture?.percentile !== null ? `${soilMoisture?.percentile?.toFixed(0)}th pct — normal` : "Unknown", active: !!soilWet },
-    { label: "Precip expected", status: precipExpected ? "Rain/snow in forecast" : "Dry forecast period", active: !!precipExpected },
-    { label: "Rain-on-frozen-ground", status: frostRisk && precipExpected ? "POSSIBLE — monitor closely" : "Not expected", active: !!(frostRisk && precipExpected) },
-    { label: "Runoff coefficient", status: frostRisk ? "0.85-0.95 if ground freezes" : gwSaturated ? "0.60-0.80 (saturated)" : "Normal (0.3-0.5)", active: !!(frostRisk || gwSaturated) },
-    { label: "Ungauged tributaries", status: "99 sq mi (Castle Creek, Thomas Creek)", active: true },
+    { label: "Main-stem stage", status: anyAboveAction ? "At or above an official action stage" : anyNearAction ? "Within 2 ft of an action stage" : "Below action stage", active: anyAboveAction || anyNearAction },
+    { label: "Groundwater", status: gwSaturated ? `Shallow — ${groundwater?.depth?.toFixed(1)} ft to the water table` : groundwater?.depth !== null && groundwater?.depth !== undefined ? `${groundwater.depth.toFixed(1)} ft to the water table` : "Unknown", active: !!gwSaturated },
+    { label: "Soil moisture", status: soilWet ? `${soilMoisture?.percentile?.toFixed(0)}th percentile — less room for rain to soak in` : soilMoisture?.percentile !== null && soilMoisture?.percentile !== undefined ? `${soilMoisture.percentile.toFixed(0)}th percentile` : "Unknown", active: !!soilWet },
+    { label: "Precipitation", status: precipExpected ? "Rain or snow is in the forecast" : "No rain or snow named in the forecast period", active: !!precipExpected },
+    { label: "Frozen ground", status: frostRisk && precipExpected ? "Frost estimate plus precipitation in the forecast" : frostRisk ? "Frost estimate is present, without forecast precipitation" : "No hydrologic frost signal", active: !!(frostRisk && precipExpected) },
+    { label: "Runoff response", status: frostRisk ? "Frozen ground would shed rain instead of soaking it in" : gwSaturated ? "A shallow water table leaves less room for infiltration" : "No frozen-ground or shallow-water-table signal", active: !!(frostRisk || gwSaturated) },
+    { label: "Small tributaries", status: "Castle Creek and Thomas Creek are not in this gauge set", active: !!precipExpected },
   ];
 
   return (
@@ -1137,14 +1209,18 @@ function LocalReportsPanel({ newsData, isError }: { newsData?: NewsData; isError
                   {severityIcons[alert.severity || "info"]}
                   <div className="flex-1 min-w-0">
                     <div className="font-medium leading-tight">{alert.headline}</div>
-                    <div className="flex items-center gap-2 mt-1 text-muted-foreground">
+                    <div className="flex items-center gap-2 mt-1 text-muted-foreground flex-wrap">
                       <span>{alert.source}</span>
                       <span>·</span>
-                      <span>{new Date(alert.date).toLocaleDateString()}</span>
+                      <span>{new Date(alert.date).toLocaleString()}</span>
+                      {alert.expires && <span>· until {new Date(alert.expires).toLocaleString()}</span>}
                       <a href={alert.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline ml-auto">
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     </div>
+                    {alert.area && <div className="text-muted-foreground mt-1">{alert.area}</div>}
+                    {alert.description && <p className="mt-1 whitespace-pre-wrap leading-relaxed text-foreground/80">{alert.description}</p>}
+                    {alert.instruction && <p className="mt-1 whitespace-pre-wrap leading-relaxed">{alert.instruction}</p>}
                   </div>
                 </div>
               </div>
@@ -1180,7 +1256,13 @@ function LocalReportsPanel({ newsData, isError }: { newsData?: NewsData; isError
 // === Weather Panel ===
 function WeatherPanel({ weather }: { weather?: WeatherData }) {
   const [open, setOpen] = useState(true);
+  const [selected, setSelected] = useState(0);
   if (!weather) return null;
+  const temps = weather.forecast.map(p => p.temp).filter((t): t is number => t !== null);
+  const tempMin = temps.length ? Math.min(...temps) : 0;
+  const tempMax = temps.length ? Math.max(...temps) : 1;
+  const span = Math.max(1, tempMax - tempMin);
+  const period = weather.forecast[selected];
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -1191,6 +1273,9 @@ function WeatherPanel({ weather }: { weather?: WeatherData }) {
               <CardTitle className="text-sm">NWS Weather</CardTitle>
               {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </div>
+            {weather.forecastIssuedAt && (
+              <p className="text-[10px] text-muted-foreground text-left">Forecast updated {new Date(weather.forecastIssuedAt).toLocaleString()}</p>
+            )}
           </CardHeader>
         </CollapsibleTrigger>
         <CollapsibleContent>
@@ -1198,7 +1283,7 @@ function WeatherPanel({ weather }: { weather?: WeatherData }) {
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="bg-accent/50 rounded p-2">
                 <div className="text-muted-foreground">Temperature</div>
-                <div className="font-bold text-lg">{weather.current.temp !== null ? `${weather.current.temp}°F` : "N/A"}</div>
+                <div className="font-bold text-lg tabular-nums">{weather.current.temp !== null ? `${weather.current.temp}°F` : "N/A"}</div>
               </div>
               <div className="bg-accent/50 rounded p-2">
                 <div className="text-muted-foreground">Conditions</div>
@@ -1219,25 +1304,49 @@ function WeatherPanel({ weather }: { weather?: WeatherData }) {
                 </div>
               )}
             </div>
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground">7-Day Forecast</h4>
-              <div className="space-y-1 max-h-64 overflow-y-auto">
+            {weather.qpf && (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 p-2 text-xs">
+                <div className="font-semibold">Precipitation</div>
+                <div>{weather.qpf.hoursUntil >= 0 ? `${weather.qpf.amount} · ${weather.qpf.hoursUntil}h` : weather.qpf.amount}</div>
+                <div className="text-muted-foreground">{weather.qpf.description}</div>
+              </div>
+            )}
+            <div>
+              <h4 className="text-xs font-semibold text-muted-foreground mb-2">Forecast periods</h4>
+              <div className="flex gap-1.5 overflow-x-auto pb-1">
                 {weather.forecast.map((p, i) => {
-                  const hasPrecip = p.shortForecast.match(/rain|snow|shower|thunderstorm|drizzle/i);
-                  const isFreezing = p.temp !== null && p.temp <= 32;
+                  const hasPrecip = /rain|snow|shower|thunderstorm|drizzle/i.test(p.shortForecast);
+                  const height = p.temp === null ? 12 : 12 + ((p.temp - tempMin) / span) * 36;
                   return (
-                    <div key={i} className={`text-xs p-2 rounded ${hasPrecip ? "bg-blue-500/10 border border-blue-500/20" : isFreezing ? "bg-cyan-500/10 border border-cyan-500/20" : "bg-accent/30"}`}>
-                      <div className="flex justify-between items-center">
-                        <span className="font-medium">{p.name}</span>
-                        <span className={`font-bold ${isFreezing ? "text-blue-400" : ""}`}>
-                          {p.temp !== null ? `${p.temp}°F` : "N/A"}
-                        </span>
+                    <button
+                      key={`${p.name}-${i}`}
+                      type="button"
+                      onClick={() => setSelected(i)}
+                      className={`shrink-0 w-20 rounded-lg border p-1.5 text-left ${i === selected ? "border-primary bg-primary/10" : hasPrecip ? "border-blue-500/30 bg-blue-500/10" : "border-border bg-accent/30"}`}
+                    >
+                      <div className="text-[10px] leading-tight line-clamp-2 h-8 break-words">{p.name}</div>
+                      <div className="mt-1 flex items-end h-12">
+                        <div className={`w-full rounded-sm ${p.temp !== null && p.temp <= 32 ? "bg-cyan-400/80" : hasPrecip ? "bg-blue-400/80" : "bg-primary/70"}`} style={{ height }} />
                       </div>
-                      <div className="text-muted-foreground mt-0.5">{p.shortForecast}</div>
-                    </div>
+                      <div className={`text-xs font-bold tabular-nums mt-1 ${p.temp !== null && p.temp <= 32 ? "text-cyan-300" : ""}`}>
+                        {p.temp !== null ? `${p.temp}°` : "—"}
+                      </div>
+                      {typeof p.precipProbability === "number" && (
+                        <div className="text-[10px] text-blue-300">{p.precipProbability}%</div>
+                      )}
+                    </button>
                   );
                 })}
               </div>
+              {period && (
+                <div className="mt-2 rounded-lg bg-accent/30 p-2 text-xs">
+                  <div className="font-medium">{period.name} · {period.shortForecast}</div>
+                  {(period.windSpeed || period.windDirection) && (
+                    <div className="text-muted-foreground mt-0.5">Wind {period.windSpeed || ""} {period.windDirection || ""}</div>
+                  )}
+                  <p className="text-muted-foreground mt-1 leading-relaxed">{period.detailedForecast}</p>
+                </div>
+              )}
             </div>
           </CardContent>
         </CollapsibleContent>
@@ -1692,11 +1801,37 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
           </p>
         </div>
 
+        {!!data.pathways?.length && (
+          <div>
+            <div className="text-xs font-semibold text-muted-foreground mb-1">How flooding can develop here</div>
+            <p className="text-[10px] text-muted-foreground mb-2">Each pathway uses the readings already on this page. Quiet means that setup is not showing up now. It is not a probability.</p>
+            <div className="space-y-2">
+              {data.pathways.map(pathway => {
+                const tone = pathway.state === "active" ? "border-red-500/30 bg-red-500/10"
+                  : pathway.state === "watch" ? "border-amber-500/30 bg-amber-500/10"
+                  : pathway.state === "unknown" ? "border-border bg-muted/20"
+                  : "border-emerald-500/20 bg-emerald-500/5";
+                const label = pathway.state === "active" ? "Showing up" : pathway.state === "watch" ? "Watch" : pathway.state === "unknown" ? "Not scored" : "Quiet";
+                return (
+                  <div key={pathway.id} className={`rounded-lg border p-2.5 ${tone}`}>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-xs font-semibold">{pathway.name}</span>
+                      <Badge variant="outline" className="text-[10px] px-1 py-0">{label}</Badge>
+                    </div>
+                    <p className="text-[11px] leading-snug text-foreground/90">{pathway.how}</p>
+                    <p className="text-[11px] leading-snug text-muted-foreground mt-1">{pathway.now}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Historical matches */}
         <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-2">Historical Pattern Match · illustrative, not probability</div>
+          <div className="text-xs font-semibold text-muted-foreground mb-2">Historical setups · illustrative, not a chance of repeat</div>
           <div className="space-y-2">
-            {data.historicalMatches.slice(0, 2).map(m => {
+            {data.historicalMatches.map(m => {
               const sc = sevColors[m.severity] || sevColors.MINOR;
               const simColor = m.similarity > 60 ? "text-red-400" : m.similarity > 40 ? "text-amber-400" : "text-muted-foreground";
               return (
@@ -1705,11 +1840,15 @@ function PredictiveOutlookPanel({ data, isLoading }: { data?: PredictiveOutlook;
                     <span className="text-xs font-semibold leading-tight">{m.name}</span>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <Badge variant="outline" className={`text-[10px] px-1 py-0 border ${sc}`}>{m.severity}</Badge>
-                      <span className={`text-xs font-bold ${simColor}`}>{m.similarity}%</span>
+                      <span className={`text-xs font-bold ${simColor}`}>{m.similarity}% of setup</span>
                     </div>
                   </div>
+                  <div className="relative mb-1.5 h-1 rounded-full bg-muted/60">
+                    <div className="stage-fill absolute inset-y-0 left-0 rounded-full bg-primary/80" style={{ width: `${Math.max(2, Math.min(100, m.similarity))}%` }} />
+                  </div>
                   <p className="text-[11px] text-muted-foreground leading-snug mb-1">{m.description}</p>
-                  <div className="text-[10px] text-muted-foreground/70 font-mono">{m.peakComparison}</div>
+                  <div className="text-[10px] text-muted-foreground/70">{m.peakComparison}</div>
+                  {m.gap && <div className="text-[10px] text-muted-foreground/80 mt-1 leading-snug">{m.gap}</div>}
                 </div>
               );
             })}
@@ -1787,6 +1926,10 @@ export default function Dashboard() {
   const gaugesResp = gauges.data;
   const gaugeList = gaugesResp?.gauges || [];
   const regularGauges = gaugeList.filter(g => !g.isReservoir);
+  const crest = regularGauges.filter(g => !g.isOffline && g.stage !== null && g.thresholds.action).reduce((top, g) => {
+    const pct = ((g.stage || 0) / (g.thresholds.action || 1)) * 100;
+    return pct > top.pct ? { pct, name: g.name, stage: g.stage, action: g.thresholds.action } : top;
+  }, { pct: 0, name: "", stage: null as number | null, action: undefined as number | undefined });
   const reservoirGauges = gaugeList.filter(g => g.isReservoir);
   const ensembleBounds = ensemble.data?.ensembleBounds;
   const histStats = historicalStats.data as HistoricalStats | undefined;
@@ -1803,6 +1946,9 @@ export default function Dashboard() {
           connectionStatus={connectionStatus}
           isDark={isDark}
           toggleDark={toggleDark}
+          crestPct={crest.action ? crest.pct : null}
+          crestLabel={crest.action && crest.stage !== null ? `${crest.name} is ${Math.round(crest.pct)}% of its ${crest.action} ft action stage` : "Waiting for a stage reading"}
+          basinTrend={gaugesResp?.basinTrend?.direction || "Steady"}
         />
 
         <main className="max-w-[1600px] mx-auto p-4 space-y-4">

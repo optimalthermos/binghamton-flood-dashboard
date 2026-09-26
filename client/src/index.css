@@ -168,6 +168,38 @@
   animation: pulse-update 1s ease-out;
 }
 
+@keyframes river-drift {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.header-river {
+  height: 22px;
+  overflow: hidden;
+  opacity: 0.85;
+}
+
+.header-river svg {
+  width: 200%;
+  height: 100%;
+  animation: river-drift 14s linear infinite;
+}
+
+.header-river-loading svg { animation-duration: 6s; }
+.header-river-draining svg { animation-duration: 22s; }
+
+.stage-fill {
+  transition: width 700ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header-river svg,
+  .stage-fill {
+    animation: none;
+    transition: none;
+  }
+}
+
 @layer utilities {
   input[type="search"]::-webkit-search-cancel-button {
     @apply hidden;
