@@ -25,13 +25,23 @@ export async function apiRequest(
   return res;
 }
 
+const SLOW_PATHS = new Set(["/api/historical-stats", "/api/soil-moisture"]);
+let freshUntil = 0;
+
+/** Manual refresh asks the daily products to reload too. */
+export function requestFreshData() {
+  freshUntil = Date.now() + 20_000;
+}
+
 type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(`${API_BASE}${queryKey.join("/")}`);
+    const path = queryKey.join("/");
+    const fresh = !SLOW_PATHS.has(path) || Date.now() < freshUntil;
+    const res = await fetch(`${API_BASE}${path}${fresh ? "?fresh=1" : ""}`);
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;

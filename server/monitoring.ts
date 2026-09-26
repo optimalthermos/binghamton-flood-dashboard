@@ -3,6 +3,13 @@ const UA = "(Floodwatch, https://github.com/optimalthermos/binghamton-flood-dash
 const entries = new Map<string, { data: any; time: number }>();
 const pending = new Map<string, Promise<any>>();
 
+export function clearVolatileOfficialCache() {
+  for (const url of Array.from(entries.keys())) {
+    if (/\/gauges\/\d+$/.test(url)) continue;
+    entries.delete(url);
+  }
+}
+
 export async function officialJSON(url: string, ttl = 300_000): Promise<any> {
   const cached = entries.get(url);
   if (cached && Date.now() - cached.time < ttl) return cached.data;

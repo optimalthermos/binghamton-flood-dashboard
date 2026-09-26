@@ -9,9 +9,10 @@ import { apiUrl } from "@/lib/queryClient";
 interface WebcamPanelProps {
   webcamsData: { cameras: Webcam[] } | undefined;
   isLoading: boolean;
+  refreshToken?: number;
 }
 
-function useCameraFrame(imageUrl: string, refreshInterval: number, fallbackPublishedAt?: string | null) {
+function useCameraFrame(imageUrl: string, refreshInterval: number, fallbackPublishedAt?: string | null, refreshToken = 0) {
   const [src, setSrc] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -23,7 +24,7 @@ function useCameraFrame(imageUrl: string, refreshInterval: number, fallbackPubli
     let objectUrl: string | null = null;
     async function load() {
       try {
-        const response = await fetch(`${apiUrl(imageUrl)}?_=${Date.now()}`, { cache: "no-store" });
+        const response = await fetch(`${apiUrl(imageUrl)}?fresh=1&_=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("unavailable");
         const blob = await response.blob();
         if (cancelled) return;
@@ -45,7 +46,7 @@ function useCameraFrame(imageUrl: string, refreshInterval: number, fallbackPubli
       clearInterval(interval);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [imageUrl, refreshInterval, fallbackPublishedAt]);
+  }, [imageUrl, refreshInterval, fallbackPublishedAt, refreshToken]);
 
   return { src, offline, loaded, publishedAt, checkedAt };
 }
@@ -60,13 +61,15 @@ function CameraThumb({
   size = "normal",
   onClick,
   isSelected,
+  refreshToken = 0,
 }: {
   cam: Webcam;
   size?: "large" | "normal" | "small";
   onClick: () => void;
   isSelected: boolean;
+  refreshToken?: number;
 }) {
-  const frame = useCameraFrame(cam.imageUrl, cam.refreshInterval, cam.publishedAt);
+  const frame = useCameraFrame(cam.imageUrl, cam.refreshInterval, cam.publishedAt, refreshToken);
   const { src, offline, loaded, publishedAt, checkedAt } = frame;
 
   const category = cam.category || "traffic";
@@ -124,8 +127,8 @@ function CameraThumb({
   );
 }
 
-function ExpandedCamera({ cam, failed, onFail }: { cam: Webcam; failed: boolean; onFail: () => void }) {
-  const { src, offline, publishedAt } = useCameraFrame(cam.imageUrl, cam.refreshInterval, cam.publishedAt);
+function ExpandedCamera({ cam, failed, onFail, refreshToken = 0 }: { cam: Webcam; failed: boolean; onFail: () => void; refreshToken?: number }) {
+  const { src, offline, publishedAt } = useCameraFrame(cam.imageUrl, cam.refreshInterval, cam.publishedAt, refreshToken);
   const publishedLabel = formatStamp(publishedAt);
   if (failed || offline) {
     return <div className="aspect-video flex items-center justify-center text-muted-foreground">Camera unavailable. Try again later.</div>;
@@ -148,7 +151,7 @@ function ExpandedCamera({ cam, failed, onFail }: { cam: Webcam; failed: boolean;
   );
 }
 
-export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
+export function WebcamPanel({ webcamsData, isLoading, refreshToken = 0 }: WebcamPanelProps) {
   const [showAllTraffic, setShowAllTraffic] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [expandedFailed, setExpandedFailed] = useState(false);
@@ -210,7 +213,7 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
         {/* Selected camera expanded view */}
         {selectedCam && (
           <div className="relative rounded-lg overflow-hidden border border-primary/30">
-            <ExpandedCamera cam={selectedCam} failed={expandedFailed} onFail={() => setExpandedFailed(true)} />
+            <ExpandedCamera cam={selectedCam} failed={expandedFailed} refreshToken={refreshToken} onFail={() => setExpandedFailed(true)} />
             <button
               aria-label="Close expanded camera"
               onClick={() => setSelected(null)}
@@ -232,8 +235,9 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {riverCams.map(cam => (
                 <CameraThumb
-                  key={`${cam.id}-${revision}`}
+                  key={`${cam.id}-${revision}-${refreshToken}`}
                   cam={cam}
+                  refreshToken={refreshToken}
                   size="large"
                   isSelected={selected === cam.id}
                   onClick={() => handleClick(cam.id)}
@@ -252,8 +256,9 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {weatherCams.map(cam => (
                 <CameraThumb
-                  key={`${cam.id}-${revision}`}
+                  key={`${cam.id}-${revision}-${refreshToken}`}
                   cam={cam}
+                  refreshToken={refreshToken}
                   size="normal"
                   isSelected={selected === cam.id}
                   onClick={() => handleClick(cam.id)}
@@ -289,8 +294,9 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
               {visibleTrafficCams.map(cam => (
                 <CameraThumb
-                  key={`${cam.id}-${revision}`}
+                  key={`${cam.id}-${revision}-${refreshToken}`}
                   cam={cam}
+                  refreshToken={refreshToken}
                   size="small"
                   isSelected={selected === cam.id}
                   onClick={() => handleClick(cam.id)}

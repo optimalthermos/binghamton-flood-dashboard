@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GaugesResponse, ForecastData, WeatherData, EnsembleData, NewsData } from "@shared/schema";
+import { requestFreshData } from "@/lib/queryClient";
 
 const REFRESH_INTERVAL = 300000; // 5 minutes
 
@@ -91,20 +92,26 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
-  const refreshAll = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["/api/gauges"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/weather"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/ensemble"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/news"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/groundwater"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/surface-obs"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/gridpoint-data"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/predictive-outlook"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/community-feed"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/webcams"] });
-    // Don't refresh daily caches on every cycle
+  const refreshAll = useCallback((includeDaily = false) => {
+    if (includeDaily) requestFreshData();
+    const keys = [
+      ["/api/gauges"],
+      ["/api/forecast"],
+      ["/api/weather"],
+      ["/api/ensemble"],
+      ["/api/news"],
+      ["/api/river-forecasts"],
+      ["/api/groundwater"],
+      ["/api/surface-obs"],
+      ["/api/gridpoint-data"],
+      ["/api/predictive-outlook"],
+      ["/api/community-feed"],
+      ["/api/webcams"],
+    ];
+    if (includeDaily) keys.push(["/api/historical-stats"], ["/api/soil-moisture"]);
+    for (const queryKey of keys) queryClient.invalidateQueries({ queryKey });
     setCountdown(REFRESH_INTERVAL / 1000);
+    setLastRefresh(new Date());
   }, [queryClient]);
 
   useEffect(() => {
@@ -120,13 +127,12 @@ export function useDashboardData() {
   }, []);
 
   useEffect(() => {
-    const queries = [gauges, forecast, weather];
-    if (queries.every(q => q.dataUpdatedAt && !(q.data as any)?.stale && !q.isError)) {
-      setLastRefresh(new Date(Math.min(...queries.map(q => q.dataUpdatedAt))));
+    if (gauges.dataUpdatedAt && !gauges.isError && !(gauges.data as any)?.stale) {
+      setLastRefresh(new Date(gauges.dataUpdatedAt));
     }
-  }, [gauges.dataUpdatedAt, forecast.dataUpdatedAt, weather.dataUpdatedAt, gauges.isError, forecast.isError, weather.isError]);
+  }, [gauges.dataUpdatedAt, gauges.isError, gauges.data]);
 
-  const isAnyLoading = gauges.isFetching || forecast.isFetching || weather.isFetching;
+  const isAnyLoading = gauges.isFetching || forecast.isFetching || weather.isFetching || news.isFetching || communityFeed.isFetching;
   const isAnyError = gauges.isError || forecast.isError || weather.isError;
   const isDataStale = !lastRefresh.getTime() || Date.now() - lastRefresh.getTime() > 10 * 60 * 1000 ||
     [gauges, forecast, weather].some(q => (q.data as any)?.stale);
