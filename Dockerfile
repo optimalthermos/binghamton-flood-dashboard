@@ -1,15 +1,14 @@
 FROM node:20-slim
 
-# System dependencies: curl for healthcheck, python3 for soil moisture script,
-# ffmpeg for NYSDOT webcam frame extraction
+# System dependencies: curl for healthcheck, python3 + GDAL for the CPC soil-moisture
+# percentile. Traffic cameras use 511NY still images, so ffmpeg is not required.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl python3 python3-pip ffmpeg \
+    curl python3 python3-gdal \
     && rm -rf /var/lib/apt/lists/*
 
-# Try to install rasterio (for soil moisture GeoTIFF extraction)
-# If it fails (missing GDAL headers), the endpoint degrades gracefully
+# rasterio remains an optional reader. python3-gdal above is the one the image relies on.
 RUN python3 -m pip install --break-system-packages rasterio 2>/dev/null || \
-    echo "rasterio install failed — soil moisture will show as unavailable"
+    echo "rasterio install skipped — soil moisture uses python3-gdal"
 
 WORKDIR /app
 

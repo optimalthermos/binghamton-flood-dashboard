@@ -6,9 +6,8 @@ import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, 
 import { observationState, precipitationTotal } from "../shared/monitoring";
 import { createHash } from "crypto";
 import type {
-  GaugeData, TimeSeriesPoint, ForecastData, WeatherData, EnsembleData,
-  GaugesResponse, ConfluenceSync, BasinTrend, FrostData, QPFData, NewsData, NewsItem,
-  EnsembleBounds,
+  GaugeData, TimeSeriesPoint, ForecastData, WeatherData,
+  GaugesResponse, ConfluenceSync, BasinTrend, FrostData, QPFData,
 } from "@shared/schema";
 
 const USER_AGENT = "(Floodwatch, https://github.com/optimalthermos/binghamton-flood-dashboard)";
@@ -72,25 +71,18 @@ const GAUGE_CONFIG: Array<{
   conservationPool?: number;
   floodPool?: number;
 }> = [
-  { id: "01503000", name: "Conklin", river: "Susquehanna River", thresholds: { action: 10, minor: 12, moderate: 15, major: 18 } },
-  { id: "01513500", name: "Vestal", river: "Susquehanna River", thresholds: { action: 15, minor: 18, moderate: 20, major: 25 } },
-  { id: "01512500", name: "Chenango Forks", river: "Chenango River", thresholds: { action: 8, minor: 10, moderate: 14, major: 18 } },
-  { id: "01515000", name: "Waverly", river: "Susquehanna River", thresholds: { action: 12, minor: 13, moderate: 17, major: 21 } },
-  { id: "01502632", name: "Windsor", river: "Susquehanna River", thresholds: { action: 8, minor: 10 } },
-  { id: "01512780", name: "Binghamton", river: "Susquehanna River", thresholds: { action: 12, minor: 15 }, isBinghamton: true },
-  { id: "01511000", name: "Whitney Point Lake", river: "Tioughnioga River (Dam)", thresholds: {}, isReservoir: true, parameterCd: "62614", conservationPool: 973, floodPool: 1047.5 },
-  { id: "01499500", name: "East Sidney Lake", river: "Ouleout Creek (Dam)", thresholds: {}, isReservoir: true, parameterCd: "62614", conservationPool: 1110, floodPool: 1213 },
-  { id: "01500000", name: "East Sidney Outflow", river: "Ouleout Creek", thresholds: {} },
-  { id: "01531000", name: "Chemung", river: "Chemung River", thresholds: { action: 11, minor: 13, moderate: 17, major: 20 } },
+  { id: "01503000", name: "Conklin", river: "Susquehanna River", thresholds: { action: 10, minor: 12, moderate: 15, major: 20 } },
+  { id: "01513500", name: "Vestal", river: "Susquehanna River", thresholds: { action: 15, minor: 18, moderate: 21, major: 27 } },
+  { id: "01512500", name: "Chenango Forks", river: "Chenango River", thresholds: { action: 8, minor: 10, moderate: 12.6, major: 14 } },
+  { id: "01515000", name: "Waverly", river: "Susquehanna River", thresholds: { action: 12, minor: 13, moderate: 16, major: 20 } },
+  { id: "01502731", name: "Windsor", river: "Susquehanna River", thresholds: { action: 13, minor: 17, moderate: 19, major: 20.5 } },
+  { id: "01502632", name: "Bainbridge", river: "Susquehanna River", thresholds: { action: 13, minor: 15, moderate: 20, major: 22 } },
+  { id: "01503500", name: "Binghamton", river: "Susquehanna River", thresholds: { action: 12, minor: 14, moderate: 15, major: 18 }, isBinghamton: true },
+  { id: "01511000", name: "Whitney Point Lake", river: "Tioughnioga River (Dam)", thresholds: { action: 1009, minor: 1010 }, isReservoir: true, parameterCd: "62614" },
+  { id: "01499500", name: "East Sidney Lake", river: "Ouleout Creek (Dam)", thresholds: { action: 1202, minor: 1203, moderate: 1205, major: 1207 }, isReservoir: true, parameterCd: "62614" },
+  { id: "01500000", name: "East Sidney Outflow", river: "Ouleout Creek", thresholds: { action: 4.5, minor: 4.5, moderate: 5, major: 6 } },
+  { id: "01531000", name: "Chemung", river: "Chemung River", thresholds: { action: 12, minor: 16, moderate: 20, major: 24 } },
 ];
-
-const NWS_TO_USGS: Record<string, string> = {
-  "CKLN6": "01503000",
-  "VSTN6": "01513500",
-  "CNON6": "01512500",
-  "WVYN6": "01515000",
-  "BNGN6": "01512780",
-};
 
 // --- Helpers ---
 
@@ -208,7 +200,7 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
   const regularIds = regularGauges.map(g => g.id).join(",");
   const regularUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${regularIds}&parameterCd=00060,00065&period=P3D`;
 
-  const metadataPromise = Promise.allSettled(regularGauges.map(g => gaugeMetadata(g.id)));
+  const metadataPromise = Promise.allSettled(GAUGE_CONFIG.map(g => gaugeMetadata(g.id)));
   const fetches: Promise<Response | null>[] = [fetchWithUA(regularUrl).catch(() => null)];
   for (const rg of reservoirGauges) {
     const rUrl = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${rg.id}&parameterCd=${rg.parameterCd}&period=P3D`;
@@ -280,16 +272,18 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     throw new Error("USGS and NOAA river observations are unavailable");
   }
   const metadata = await metadataPromise;
+  const metaFor = (id: string) => {
+    const result = metadata[GAUGE_CONFIG.findIndex(g => g.id === id)];
+    return result?.status === "fulfilled" ? result.value : null;
+  };
   const allGauges: GaugeData[] = GAUGE_CONFIG.map(config => {
     const gd = gaugeMap[config.id];
+    const meta = metaFor(config.id);
 
     if (config.isReservoir) {
       const elevTS = gd?.elevTS || [];
       const lastElev = elevTS.filter(p => p.value !== null).slice(-1)[0];
       const poolElev = lastElev?.value ?? null;
-      const conserv = config.conservationPool || 973;
-      const flood = config.floodPool || 1047.5;
-      const pct = poolElev !== null ? Math.round(((poolElev - conserv) / (flood - conserv)) * 1000) / 10 : null;
       const { rate, phase } = computeRecessionRate(elevTS);
 
       return {
@@ -303,16 +297,13 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
         flowTimeSeries: [],
         lastUpdated: lastElev?.timestamp || null,
         trend: computeTrend(elevTS),
-        thresholds: config.thresholds,
+        thresholds: officialThresholds(meta),
         isBinghamton: false,
         isOffline: !gd || elevTS.length === 0,
         isReservoir: true,
         poolElevation: poolElev,
-        conservationPool: conserv,
-        // Elevation is not volume; do not label a linear stage ratio as storage.
         floodStoragePct: null,
-        poolRangePct: pct,
-        floodPool: flood,
+        poolRangePct: null,
         recessionRate: rate,
         recessionPhase: phase,
       };
@@ -324,8 +315,6 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
     const lastFlow = flowTS.filter(p => p.value !== null).slice(-1)[0];
     const isOffline = !lastStage && !lastFlow;
     const { rate, phase } = computeRecessionRate(stageTS);
-    const result = metadata[regularGauges.findIndex(g => g.id === config.id)];
-    const meta = result?.status === "fulfilled" ? result.value : null;
 
     return {
       id: config.id,
@@ -356,27 +345,31 @@ async function fetchGaugeData(): Promise<GaugesResponse> {
 
 // --- AFD Parsing ---
 
-function parseAFD(text: string): { synopsis: string; shortTerm: string; longTerm: string; issuedAt: string } {
-  const issuedMatch = text.match(/(\d{3,4}\s*(AM|PM)\s*\w+\s*\w+\s*\w+\s*\w+\s*\d{4})/i);
-  const issuedAt = issuedMatch ? issuedMatch[1] : new Date().toISOString();
+const NWS_PRODUCT_TIME = /(\d{1,4}\s+(?:AM|PM)\s+[A-Z]{2,4}\s+[A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{4})/;
 
-  const extractSection = (name: string): string => {
-    const patterns = [
-      new RegExp(`\\.${name}[.\\.]*\\n([\\s\\S]*?)(?=\\n\\.\\w|$$)`, 'i'),
-      new RegExp(`${name}[.\\.]*\\n([\\s\\S]*?)(?=\\n\\.\\w|$$)`, 'i'),
-    ];
-    for (const pat of patterns) {
-      const m = text.match(pat);
-      if (m && m[1]?.trim()) return m[1].trim().slice(0, 2000);
-    }
-    return "";
-  };
+function productIssuedAt(text: string): string | null {
+  return text.match(NWS_PRODUCT_TIME)?.[1] ?? null;
+}
 
+function parseAFD(text: string): { synopsis: string; shortTerm: string; longTerm: string; issuedAt: string; sections: Array<{ heading: string; text: string }> } {
+  const issuedAt = productIssuedAt(text);
+  if (!issuedAt) throw new Error("NWS forecast discussion issue time unavailable");
+  const sections: Array<{ heading: string; text: string }> = [];
+  const pattern = /(?:^|\n)\.([A-Z][A-Z0-9 /()-]{2,80}?)\.{2,}\s*\n([\s\S]*?)(?=\n\.[A-Z]|\n&&|\n\$\$|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const heading = match[1].trim();
+    const body = match[2].replace(/\n&&\s*$/g, "").trim();
+    if (!body || /^(AVIATION|MARINE|FIRE WEATHER|CLIMATE|WATCHES|BGM WATCHES)/i.test(heading)) continue;
+    sections.push({ heading, text: body.slice(0, 2000) });
+  }
+  if (!sections.length) throw new Error("NWS forecast discussion sections unavailable");
   return {
-    synopsis: extractSection("SYNOPSIS") || extractSection("DISCUSSION"),
-    shortTerm: extractSection("SHORT TERM") || extractSection("NEAR TERM"),
-    longTerm: extractSection("LONG TERM") || extractSection("EXTENDED"),
+    synopsis: sections[0]?.text || "",
+    shortTerm: sections[1]?.text || "",
+    longTerm: sections[2]?.text || "",
     issuedAt,
+    sections,
   };
 }
 
@@ -391,7 +384,6 @@ async function fetchForecast(): Promise<ForecastData> {
   if (!afdRes.ok || !afdText.includes("Forecast Discussion")) throw new Error("NWS forecast discussion unavailable");
 
   const cleanAfd = afdText.replace(/<[^>]*>/g, "").trim();
-  // FIX: Remove script tags and their content BEFORE stripping other HTML tags
   const cleanRva = rvaText
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -399,18 +391,20 @@ async function fetchForecast(): Promise<ForecastData> {
     .trim();
 
   const parsed = parseAFD(cleanAfd);
+  const riverIssuedAt = productIssuedAt(cleanRva);
 
   return {
     afd: {
       synopsis: parsed.synopsis,
       shortTerm: parsed.shortTerm,
       longTerm: parsed.longTerm,
+      sections: parsed.sections,
       rawText: cleanAfd.slice(0, 8000),
       issuedAt: parsed.issuedAt,
     },
     riverSummary: {
-      text: cleanRva.slice(0, 5000),
-      issuedAt: new Date().toISOString(),
+      text: riverIssuedAt ? cleanRva.slice(0, 5000) : "",
+      issuedAt: riverIssuedAt || "",
     },
   };
 }
@@ -537,138 +531,39 @@ async function fetchWeather(): Promise<WeatherData> {
     stale: observationState(observedAt) !== "current" } as WeatherData;
 }
 
-// --- Ensemble ---
-
-function parseEnsembleBounds(html: string): EnsembleBounds {
-  const bounds: EnsembleBounds = {};
-
-  for (const [nwsId, usgsId] of Object.entries(NWS_TO_USGS)) {
-    const linePattern = new RegExp(`${nwsId}[^\\n]*`, 'gi');
-    const lineMatch = html.match(linePattern);
-    if (lineMatch) {
-      const numbers: number[] = [];
-      for (const line of lineMatch) {
-        const numMatches = line.match(/(\d+\.?\d*)/g);
-        if (numMatches) {
-          for (const n of numMatches) {
-            const val = parseFloat(n);
-            if (val > 0 && val < 100) numbers.push(val);
-          }
-        }
-      }
-
-      if (numbers.length >= 3) {
-        numbers.sort((a, b) => b - a);
-        bounds[usgsId] = {
-          p10: numbers[0],
-          p50: numbers[Math.floor(numbers.length / 2)],
-          p90: numbers[numbers.length - 1],
-        };
-      }
-    }
-  }
-
-  if (Object.keys(bounds).length === 0) {
-    bounds["01503000"] = { p10: 9.4, p50: 6.3, p90: 3.5 };
-    bounds["01513500"] = { p10: 14.0, p50: 8.9, p90: 4.6 };
-    bounds["01512500"] = { p10: 7.4, p50: 5.4, p90: 3.6 };
-    bounds["01515000"] = { p10: 8.5, p50: 5.4, p90: 2.7 };
-    bounds["01512780"] = { p10: 8.9, p50: 5.6, p90: 3.2 };
-  }
-
-  return bounds;
-}
-
-async function fetchEnsemble(): Promise<EnsembleData> {
-  const res = await fetchWithUA("https://www.weather.gov/source/erh/mmefs/marfc.GEFS.table.html");
-  if (!res.ok) throw new Error(`MARFC GEFS returned ${res.status}`);
-  const html = await res.text();
-  const ensembleBounds = parseEnsembleBounds(html);
-
-  return {
-    rawHtml: html,
-    timestamp: new Date().toISOString(),
-    ensembleBounds,
-  };
-}
-
-// --- News & Alerts ---
-
-const CURATED_REPORTS: NewsItem[] = [
-  { headline: "Flood Watch in effect through Wed Apr 1 8PM EDT", source: "NWS Binghamton", date: "2026-04-01", url: "https://forecast.weather.gov/showsigwx.php?warnzone=NYZ044", severity: "watch" },
-  { headline: "Flood Warning extended: Chenango River at Sherburne expected to reach flood stage", source: "NWS BGM", date: "2026-03-30", url: "https://forecast.weather.gov/", severity: "warning" },
-  { headline: "Flooding closes roads across Finger Lakes, Southern Tier — over 2 inches on saturated ground; downed trees in Binghamton", source: "Syracuse.com", date: "2026-04-01", url: "https://www.syracuse.com/", severity: "info" },
-  { headline: "Flood Warning: Rapidly rising water occurring/expected in warned area", source: "NWS Instagram", date: "2026-04-04", url: "https://www.instagram.com/nwsbinghamton/", severity: "warning" },
-  { headline: "Steuben County travel advisory remains in effect — multiple roads closed due to flooding, damage, debris", source: "Steuben OES", date: "2026-04-01", url: "https://www.steubencony.org/", severity: "advisory" },
-  { headline: "Allegany County declares State of Emergency due to widespread flood impacts", source: "FingerLakes1.com", date: "2026-04-01", url: "https://fingerlakes1.com/", severity: "info" },
-  { headline: "Flood Warning continues for Onondaga Lake at Liverpool — minor flooding occurring", source: "NWS BGM", date: "2026-04-05", url: "https://forecast.weather.gov/", severity: "warning" },
-  { headline: "Susquehanna ice jam causes flooding in Luzerne County — river dropped a couple feet overnight", source: "WHTM abc27", date: "2026-02-24", url: "https://www.abc27.com/", severity: "info" },
-];
-
-async function fetchNews(): Promise<NewsData> {
-  const alerts: NewsItem[] = [];
-
-  try {
-    const res = await fetchWithUA("https://api.weather.gov/alerts/active?area=NY");
-    if (res.ok) {
-      const data = await res.json();
-      const features = data?.features || [];
-
-      for (const f of features) {
-        const props = f.properties;
-        if (!props) continue;
-
-        const office = props.senderName || "";
-        const event = (props.event || "").toLowerCase();
-        const isBGM = office.includes("Binghamton") || office.includes("BGM");
-        const isFlood = event.includes("flood");
-
-        if (isBGM && isFlood) {
-          let severity: NewsItem["severity"] = "info";
-          if (event.includes("warning")) severity = "warning";
-          else if (event.includes("watch")) severity = "watch";
-          else if (event.includes("advisory")) severity = "advisory";
-
-          alerts.push({
-            headline: props.headline || props.event || "NWS Alert",
-            source: "NWS Binghamton",
-            date: props.effective || new Date().toISOString(),
-            url: props["@id"] || "https://forecast.weather.gov/",
-            severity,
-            isNWSAlert: true,
-          });
-        }
-      }
-    }
-  } catch { /* alerts are optional */ }
-
-  return { alerts, curatedReports: CURATED_REPORTS };
-}
-
 // --- V3 New Fetch Functions ---
 
 async function fetchGroundwater() {
-  const res = await fetchWithUA("https://waterservices.usgs.gov/nwis/iv/?format=json&sites=421556075281602&parameterCd=72019&period=P7D");
-  if (!res.ok) throw new Error(`USGS GW returned ${res.status}`);
-  const data = await res.json();
-  const ts = data?.value?.timeSeries?.[0];
-  const values: TimeSeriesPoint[] = (ts?.values?.[0]?.value || []).map((v: any) => ({
-    timestamp: v.dateTime,
-    value: v.value !== null && v.value !== "" && v.value !== "-999999" ? parseFloat(v.value) : null,
-  }));
-  const last = values.filter(p => p.value !== null).slice(-1)[0];
-  const depth = last?.value ?? null;
-  const trend = computeTrend(values);
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetchWithUA("https://waterservices.usgs.gov/nwis/iv/?format=json&sites=421556075281602&parameterCd=72019&period=P7D");
+      if (!res.ok) throw new Error(`USGS GW returned ${res.status}`);
+      const data = await res.json();
+      const ts = data?.value?.timeSeries?.[0];
+      const values: TimeSeriesPoint[] = (ts?.values?.[0]?.value || []).map((v: any) => ({
+        timestamp: v.dateTime,
+        value: v.value !== null && v.value !== "" && v.value !== "-999999" ? parseFloat(v.value) : null,
+      }));
+      const last = values.filter(p => p.value !== null).slice(-1)[0];
+      const depth = last?.value ?? null;
+      const trend = computeTrend(values);
 
-  let interpretation = "Unknown";
-  if (depth !== null) {
-    if (depth > 10) interpretation = "Deep — High Infiltration Capacity";
-    else if (depth > 5) interpretation = "Moderate — Some Capacity";
-    else if (depth > 2) interpretation = "Shallow — Limited Capacity";
-    else interpretation = "Near Surface — Basin Saturated";
+      let interpretation = "Unknown";
+      if (depth !== null) {
+        if (depth > 10) interpretation = "Deep — High Infiltration Capacity";
+        else if (depth > 5) interpretation = "Moderate — Some Capacity";
+        else if (depth > 2) interpretation = "Shallow — Limited Capacity";
+        else interpretation = "Near Surface — Basin Saturated";
+      }
+
+      return { depth, trend, timeSeries: values.slice(-168), interpretation, lastUpdated: last?.timestamp || null };
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+    }
   }
-
-  return { depth, trend, timeSeries: values.slice(-168), interpretation, lastUpdated: last?.timestamp || null };
+  throw lastError || new Error("USGS groundwater unavailable");
 }
 
 async function fetchSurfaceObs() {
@@ -771,7 +666,7 @@ async function fetchGridpointData() {
 }
 
 async function fetchHistoricalStats() {
-  const sites = "01503000,01513500,01512500,01515000,01502632";
+  const sites = "01503000,01502731,01502632,01503500,01513500,01512500,01515000";
   const res = await fetchWithUA(`https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites=${sites}&statReportType=daily&statTypeCd=all&parameterCd=00060`);
   if (!res.ok) throw new Error(`USGS stats returned ${res.status}`);
   const text = await res.text();
@@ -1117,18 +1012,99 @@ async function fetchPredictiveOutlook() {
 
 // --- V5: Webcam + Community Feed ---
 
-const DOT_CAMERAS = [
-  { id: "R9_007", name: "NY 17 East of Glenwood Rd", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R9_007/playlist.m3u8", lat: 42.1155, lon: -75.9378 },
-  { id: "R9_001", name: "NY 17 west of I-81", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_001/playlist.m3u8", lat: 42.1129, lon: -75.9202 },
-  { id: "R9_004", name: "I-81 at Exit 5", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_004/playlist.m3u8", lat: 42.1236, lon: -75.9051 },
-  { id: "R9_005", name: "I-81 at Exit 4", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_005/playlist.m3u8", lat: 42.1145, lon: -75.8988 },
-  { id: "R9_008", name: "I-81 NB at Windy Hill Rd", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R9_008/playlist.m3u8", lat: 42.1101, lon: -75.8641 },
-  { id: "R9_006", name: "NY 17 East of Airport Rd", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_006/playlist.m3u8", lat: 42.1198, lon: -75.9442 },
-  { id: "R9_002", name: "NY 17 Approaching I-81", stream: "https://s51.nysdot.skyvdn.com:443/rtplive/R9_002/playlist.m3u8", lat: 42.1133, lon: -75.9250 },
-  { id: "R9_035", name: "NY 17 WB Exit 65 (Owego)", stream: "https://s9.nysdot.skyvdn.com:443/rtplive/R9_035/playlist.m3u8", lat: 42.1032, lon: -76.2618 },
-  { id: "R3_074", name: "I-81 south of Exit 9 (Marathon)", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R3_074/playlist.m3u8", lat: 42.4380, lon: -75.9870 },
-  { id: "R3_073", name: "I-81 north of Exit 9 (Marathon)", stream: "https://s7.nysdot.skyvdn.com:443/rtplive/R3_073/playlist.m3u8", lat: 42.4490, lon: -75.9840 },
-];
+const BASIN_BOX = { minLat: 41.9, maxLat: 42.5, minLon: -76.6, maxLon: -75.4 };
+
+function inBasin(wkt: string) {
+  const match = /POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)/i.exec(wkt || "");
+  if (!match) return false;
+  const lon = Number(match[1]);
+  const lat = Number(match[2]);
+  return lat >= BASIN_BOX.minLat && lat <= BASIN_BOX.maxLat && lon >= BASIN_BOX.minLon && lon <= BASIN_BOX.maxLon;
+}
+
+async function fetch511CameraPage(start: number, pageSize: number) {
+  let lastError = "511NY camera list unavailable";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+    try {
+      const response = await fetch("https://511ny.org/List/GetData/Cameras", {
+        method: "POST",
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Referer: "https://511ny.org/List/Cameras",
+        },
+        body: JSON.stringify({
+          draw: 1, start, length: pageSize,
+          search: { value: "", regex: false },
+          order: [{ column: 0, dir: "asc" }],
+          columns: [{ data: "location", name: "location", searchable: true, orderable: true, search: { value: "", regex: false } }],
+        }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (response.ok) return response.json();
+      lastError = `511NY camera list returned ${response.status}`;
+      if (response.status < 500) break;
+    } catch (err: any) {
+      lastError = err?.message || lastError;
+    }
+  }
+  throw new Error(lastError);
+}
+
+async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index]);
+    }
+  }));
+  return results;
+}
+
+async function fetch511TrafficCameras() {
+  const cameras: Array<{
+    id: string; name: string; type: "dot"; category: "traffic"; imageUrl: string;
+    refreshInterval: number; description: string; sourceUrl: string; publishedAt: string | null;
+  }> = [];
+  const pageSize = 100;
+  const first = await fetch511CameraPage(0, pageSize);
+  const total = Number.isFinite(first.recordsFiltered) ? first.recordsFiltered : (Array.isArray(first.data) ? first.data.length : 0);
+  const starts: number[] = [];
+  for (let start = pageSize; start < total && start < 5000; start += pageSize) starts.push(start);
+  const pages = [first, ...await mapLimited(starts, 4, start => fetch511CameraPage(start, pageSize))];
+  for (const row of pages.flatMap(page => Array.isArray(page?.data) ? page.data : [])) {
+    const image = (row?.images || []).find((img: any) => img && img.disabled !== true && img.imageUrl && Number.isFinite(Number(img.id)));
+    if (!image || !inBasin(row?.latLng?.geography?.wellKnownText || "")) continue;
+    const imageId = String(image.id);
+    if (cameras.some(cam => cam.id === `dot-${imageId}`)) continue;
+    cameras.push({
+      id: `dot-${imageId}`,
+      name: row.location || `Camera ${imageId}`,
+      type: "dot",
+      category: "traffic",
+      imageUrl: `/api/webcams/dot/${imageId}`,
+      refreshInterval: 60,
+      description: [row.roadway, row.county].filter(Boolean).join(" · ") || "511NY traffic camera",
+      sourceUrl: `https://511ny.org/map/Cctv/${imageId}`,
+      publishedAt: null,
+    });
+  }
+  await Promise.all(cameras.map(async cam => {
+    try {
+      const response = await fetch(cam.sourceUrl, {
+        method: "HEAD",
+        headers: { "User-Agent": USER_AGENT, Referer: "https://511ny.org/List/Cameras" },
+        signal: AbortSignal.timeout(8_000),
+      });
+      cam.publishedAt = response.ok ? response.headers.get("last-modified") : null;
+    } catch { cam.publishedAt = null; }
+  }));
+  return cameras;
+}
 
 // USGS and Mesonet camera image cache (30 min TTL)
 const USGS_CAM_CACHE_TTL = 30 * 60 * 1000;
@@ -1142,20 +1118,6 @@ const USGS_CAM_URLS: Record<string, string> = {
   oxford: "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Oxford/NY_Chenango_River_at_Oxford_newest.jpg",
   sherburne: "https://usgs-nims-images.s3.amazonaws.com/720/NY_Chenango_River_at_Sherburne/NY_Chenango_River_at_Sherburne_newest.jpg",
 };
-
-const DOT_CAM_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-const dotCamCache: Record<string, { buf: Buffer; timestamp: number }> = {};
-
-function getDotCamCached(id: string): Buffer | null {
-  const entry = dotCamCache[id];
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp < DOT_CAM_CACHE_TTL) return entry.buf;
-  return null;
-}
-
-function setDotCamCache(id: string, buf: Buffer): void {
-  dotCamCache[id] = { buf, timestamp: Date.now() };
-}
 
 function hashUsername(username: string): string {
   return createHash("md5").update(username).digest("hex").slice(0, 4).toUpperCase();
@@ -1338,7 +1300,10 @@ export async function registerRoutes(
 
   // V5: Webcam metadata (expanded with USGS river cams, Mesonet, and additional DOT cameras)
   cachedRoute("/api/webcams", "webcams-meta", async () => {
-    const cameras = [
+    const cameras: Array<{
+      id: string; name: string; type: "usgs" | "nws" | "dot"; category: "river" | "weather" | "traffic";
+      imageUrl: string; refreshInterval: number; description: string; sourceUrl?: string; publishedAt?: string | null;
+    }> = [
       // River cameras (USGS — most valuable for flood monitoring)
       { id: "usgs-norwich-staff", name: "Chenango River at Norwich — Staff Gauge", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-staff", refreshInterval: 1800, description: "USGS river-level reference view; check image timestamp" },
       { id: "usgs-norwich-downstream", name: "Chenango River at Norwich — Downstream", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/norwich-downstream", refreshInterval: 1800, description: "USGS downstream view; check image timestamp" },
@@ -1347,17 +1312,10 @@ export async function registerRoutes(
       { id: "usgs-sherburne", name: "Chenango River at Sherburne", type: "usgs" as const, category: "river" as const, imageUrl: "/api/webcams/usgs/sherburne", refreshInterval: 3600, description: "USGS 01505000 — upstream Chenango, river bend" },
       // Weather cameras
       { id: "nws", name: "NWS Binghamton Office", type: "nws" as const, category: "weather" as const, imageUrl: "/api/webcams/nws", refreshInterval: 600, description: "South view from NWS BGM office" },
-      // Traffic cameras (NYSDOT)
-      ...DOT_CAMERAS.map(c => ({
-        id: c.id,
-        name: c.name,
-        type: "dot" as const,
-        category: "traffic" as const,
-        imageUrl: `/api/webcams/dot/${c.id}`,
-        refreshInterval: 120,
-        description: "NYSDOT traffic camera",
-      })),
     ];
+    try {
+      cameras.push(...await fetch511TrafficCameras());
+    } catch { /* Traffic snapshots are optional; river and weather cameras still return. */ }
     await Promise.all(cameras.filter(c => c.type === "usgs").map(async cam => {
       const key = cam.imageUrl.split("/").pop()!;
       try {
@@ -1458,28 +1416,31 @@ export async function registerRoutes(
     }
   });
 
-  // V5: DOT camera frame extraction via ffmpeg
   app.get("/api/webcams/dot/:cameraId", async (req, res) => {
     const cameraId = req.params.cameraId;
-    const cam = DOT_CAMERAS.find(c => c.id === cameraId);
-    if (!cam) return res.status(404).json({ error: "Unknown camera ID" });
-
-    // Check per-camera cache
-    const cached = getDotCamCached(cameraId);
-    if (cached) {
-      res.set("Content-Type", "image/jpeg");
-      return res.send(cached);
-    }
-
+    if (!/^\d+$/.test(cameraId)) return res.status(404).json({ error: "Unknown camera ID" });
+    const sourceUrl = `https://511ny.org/map/Cctv/${cameraId}`;
     try {
-      const { stdout: buf } = await execFileAsync("ffmpeg",
-        ["-loglevel", "error", "-i", cam.stream, "-frames:v", "1", "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-        { timeout: 10000, maxBuffer: 5 * 1024 * 1024, encoding: "buffer" });
-      setDotCamCache(cameraId, buf);
-      res.set("Content-Type", "image/jpeg");
-      return res.send(buf);
+      const cached = getCached<{ body: Buffer; type: string; publishedAt: string | null }>(`dot-cam-${cameraId}`, 60_000);
+      if (cached && !cached.stale) {
+        res.set("Content-Type", cached.data.type);
+        if (cached.data.publishedAt) res.set("Last-Modified", cached.data.publishedAt);
+        return res.send(cached.data.body);
+      }
+      const imgRes = await fetch(sourceUrl, {
+        headers: { "User-Agent": USER_AGENT, Referer: "https://511ny.org/List/Cameras" },
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!imgRes.ok) throw new Error(`511NY camera returned ${imgRes.status}`);
+      const body = Buffer.from(await imgRes.arrayBuffer());
+      const type = imgRes.headers.get("content-type") || "image/jpeg";
+      const publishedAt = imgRes.headers.get("last-modified");
+      setCache(`dot-cam-${cameraId}`, { body, type, publishedAt });
+      res.set("Content-Type", type);
+      if (publishedAt) res.set("Last-Modified", publishedAt);
+      return res.send(body);
     } catch (err: any) {
-      return res.status(502).json({ error: `Camera frame extraction failed: ${err.message}` });
+      return res.status(502).json({ error: err.message });
     }
   });
 

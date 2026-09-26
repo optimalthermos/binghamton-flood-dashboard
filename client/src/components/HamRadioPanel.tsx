@@ -44,7 +44,6 @@ interface ScannerFeed {
   id: number;
   name: string;
   description: string;
-  listeners: number;
   tags: string[];
 }
 
@@ -53,21 +52,18 @@ const SCANNER_FEEDS: ScannerFeed[] = [
     id: 39447,
     name: "Broome County Public Safety (P25)",
     description: "Police/Fire/EMS dispatch — primary Broome County feed",
-    listeners: 30,
     tags: ["Police", "Fire", "EMS"],
   },
   {
     id: 43682,
     name: "Broome County Battalion 2",
     description: "Fire/EMS + Binghamton PD — Battalion 2 operations",
-    listeners: 4,
     tags: ["Fire", "EMS", "BPD"],
   },
   {
     id: 39886,
     name: "Broome County Fire/EMS (P25)",
     description: "Fire and EMS only — dedicated P25 trunked system",
-    listeners: 1,
     tags: ["Fire", "EMS"],
   },
 ];
@@ -203,12 +199,10 @@ function AudioPlayerRow({ feed, isActive, onActivate, onDeactivate }: AudioPlaye
           </div>
           <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{feed.description}</p>
 
-          {/* Tags + listener count */}
           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
             {feed.tags.map(tag => (
               <Badge key={tag} variant="outline" className="text-[9px] px-1 py-0 h-4">{tag}</Badge>
             ))}
-            <span className="text-[10px] text-muted-foreground ml-auto">{feed.listeners} listening</span>
           </div>
         </div>
 

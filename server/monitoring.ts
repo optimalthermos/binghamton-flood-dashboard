@@ -21,7 +21,7 @@ export async function officialJSON(url: string, ttl = 300_000): Promise<any> {
   try { return await request; } finally { pending.delete(url); }
 }
 
-export const forecastSites = ["01503000", "01513500", "01512500", "01515000"];
+export const forecastSites = ["01503000", "01502731", "01503500", "01513500", "01512500", "01515000"];
 
 export async function gaugeMetadata(id: string) {
   return officialJSON(`https://api.water.noaa.gov/nwps/v1/gauges/${id}`, 6 * 3600_000);

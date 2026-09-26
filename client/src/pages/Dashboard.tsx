@@ -308,9 +308,12 @@ function ConfluenceSyncPanel({ gaugesResp }: { gaugesResp?: GaugesResponse }) {
 
 // === Whitney Point Dam Card (v2 feature 1) ===
 function ReservoirCard({ gauge }: { gauge: GaugeData }) {
-  const pct = gauge.poolRangePct ?? 0;
-  const pctColor = pct > 60 ? "text-red-400" : pct > 30 ? "text-amber-400" : "text-emerald-400";
-  const barColor = pct > 60 ? "bg-red-500" : pct > 30 ? "bg-amber-500" : "bg-emerald-500";
+  const categories = [
+    ["Action", gauge.thresholds.action],
+    ["Minor", gauge.thresholds.minor],
+    ["Moderate", gauge.thresholds.moderate],
+    ["Major", gauge.thresholds.major],
+  ].filter((entry): entry is [string, number] => typeof entry[1] === "number");
 
   return (
     <Card className="bg-card border-border col-span-1">
@@ -320,31 +323,27 @@ function ReservoirCard({ gauge }: { gauge: GaugeData }) {
             <Gauge className="h-5 w-5 text-primary" />
             <div>
               <h3 className="font-semibold text-sm">{gauge.name}</h3>
-              <p className="text-xs text-muted-foreground">{gauge.river} — System Buffer</p>
+              <p className="text-xs text-muted-foreground">{gauge.river}</p>
             </div>
           </div>
-          <Badge variant="outline" className={`text-xs ${pctColor}`}>
-            {gauge.poolRangePct == null ? "Range unavailable" : `${pct.toFixed(1)}% elevation range`}
+          <Badge variant="outline" className="text-xs">
+            Observed pool elevation
           </Badge>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <div className={`text-3xl font-bold tabular-nums ${pctColor}`}>
+            <div className="text-3xl font-bold tabular-nums">
               {gauge.poolElevation?.toFixed(2) ?? "—"}
-              <span className="text-sm font-normal ml-1">ft (station datum)</span>
+              <span className="text-sm font-normal ml-1">ft</span>
             </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              Conservation: {gauge.conservationPool}ft | Upper reference: {gauge.floodPool}ft
-            </div>
-            <div className="mt-2">
-              <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                <span>{gauge.conservationPool}ft</span>
-                <span>{gauge.floodPool}ft</span>
-              </div>
-              <div className="h-3 bg-muted rounded-full overflow-hidden">
-                <div className={`h-full ${barColor} rounded-full transition-all`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1">Elevation range, not a storage-volume percentage.</p>
+            <div className="mt-2 flex gap-1 flex-wrap">
+              {categories.length ? categories.map(([label, stage]) => (
+                <Badge key={label} variant="outline" className="text-[10px] px-1 py-0">
+                  {label}: {stage} ft
+                </Badge>
+              )) : (
+                <span className="text-xs text-muted-foreground">Official flood categories unavailable</span>
+              )}
             </div>
             {gauge.recessionRate !== null && gauge.recessionRate !== undefined && (
               <div className="mt-2 flex items-center gap-2 text-xs">
@@ -944,7 +943,7 @@ function ConfluenceHydraulicsPanel({ gaugesResp }: { gaugesResp?: GaugesResponse
   const conklin = gauges.find(g => g.id === "01503000");
   const chenango = gauges.find(g => g.id === "01512500");
   const waverly = gauges.find(g => g.id === "01515000");
-  const windsor = gauges.find(g => g.id === "01502632");
+  const windsor = gauges.find(g => g.id === "01502731");
 
   if (!conklin?.flow || !chenango?.flow) return null;
 
@@ -952,15 +951,7 @@ function ConfluenceHydraulicsPanel({ gaugesResp }: { gaugesResp?: GaugesResponse
   const ratioLabel = ratio > 2 ? "Susquehanna dominant" : ratio < 0.5 ? "Chenango dominant" : "Near parity";
   const ratioColor = ratio > 2 ? "text-blue-400" : ratio < 0.5 ? "text-emerald-400" : "text-red-400";
 
-  const windsorStage = windsor?.stage;
-  const conklinStage = conklin?.stage;
-  let deficit: number | null = null;
-  let deficitNote = "";
-  if (windsorStage !== null && windsorStage !== undefined && conklinStage !== null && conklinStage !== undefined) {
-    deficit = conklinStage - windsorStage;
-    deficitNote = deficit > 2 ? "Large lateral inflow — tributaries contributing heavily" :
-      deficit > 0 ? "Moderate lateral inflow" : "Conklin lower than Windsor — check data";
-  }
+  const dischargeChange = windsor?.flow != null ? conklin.flow - windsor.flow : null;
 
   return (
     <Card className="bg-card border-border">
@@ -979,14 +970,14 @@ function ConfluenceHydraulicsPanel({ gaugesResp }: { gaugesResp?: GaugesResponse
             </div>
           </div>
           <div className="bg-accent/50 rounded p-2.5">
-            <div className="text-xs text-muted-foreground mb-1">Windsor→Conklin Δ Stage</div>
-            {deficit !== null ? (
+            <div className="text-xs text-muted-foreground mb-1">Windsor to Conklin discharge change</div>
+            {dischargeChange !== null ? (
               <>
-                <div className="text-xl font-bold tabular-nums">{deficit > 0 ? "+" : ""}{deficit.toFixed(2)} ft</div>
-                <div className="text-xs text-muted-foreground">{deficitNote}</div>
+                <div className="text-xl font-bold tabular-nums">{dischargeChange > 0 ? "+" : ""}{Math.round(dischargeChange).toLocaleString()} cfs</div>
+                <div className="text-xs text-muted-foreground">Difference between the two gauges, not a measured tributary inflow</div>
               </>
             ) : (
-              <div className="text-sm text-muted-foreground">Unavailable</div>
+              <div className="text-sm text-muted-foreground">Windsor discharge unavailable</div>
             )}
           </div>
         </div>
@@ -1280,27 +1271,17 @@ function AFDPanel({ forecast }: { forecast?: ForecastData }) {
         </CollapsibleTrigger>
         <CollapsibleContent>
           <CardContent className="space-y-3 text-xs">
-            {forecast.afd.synopsis && (
-              <div>
-                <h4 className="font-semibold text-muted-foreground mb-1">Synopsis</h4>
+            {(forecast.afd.sections?.length ? forecast.afd.sections : [
+              forecast.afd.synopsis ? { heading: "Synopsis", text: forecast.afd.synopsis } : null,
+              forecast.afd.shortTerm ? { heading: "Short Term", text: forecast.afd.shortTerm } : null,
+              forecast.afd.longTerm ? { heading: "Long Term", text: forecast.afd.longTerm } : null,
+            ].filter((section): section is { heading: string; text: string } => !!section)).map(section => (
+              <div key={section.heading}>
+                <h4 className="font-semibold text-muted-foreground mb-1">{section.heading}</h4>
                 <p className="text-foreground/80 whitespace-pre-wrap leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: highlightKeywords(forecast.afd.synopsis) }} />
+                  dangerouslySetInnerHTML={{ __html: highlightKeywords(section.text) }} />
               </div>
-            )}
-            {forecast.afd.shortTerm && (
-              <div>
-                <h4 className="font-semibold text-muted-foreground mb-1">Short Term</h4>
-                <p className="text-foreground/80 whitespace-pre-wrap leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: highlightKeywords(forecast.afd.shortTerm) }} />
-              </div>
-            )}
-            {forecast.afd.longTerm && (
-              <div>
-                <h4 className="font-semibold text-muted-foreground mb-1">Long Term</h4>
-                <p className="text-foreground/80 whitespace-pre-wrap leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: highlightKeywords(forecast.afd.longTerm) }} />
-              </div>
-            )}
+            ))}
           </CardContent>
         </CollapsibleContent>
       </Card>
@@ -1332,7 +1313,7 @@ function DataSourceStatus({ gauges, forecast, weather, ensemble, groundwater, su
     { name: "SPC Mesoanalysis", status: "unchecked", url: "https://www.spc.noaa.gov/exper/mesoanalysis/", note: "PWAT + 850mb images; check image availability" },
     { name: "IEM NEXRAD Radar", status: "unchecked", url: "https://mesonet.agron.iastate.edu/", note: "Composite reflectivity; check image availability" },
     { name: "USGS Historical Stats", status: "unchecked", url: "https://waterservices.usgs.gov/nwis/stat/", note: "Daily flow percentiles; not monitored here" },
-    { name: "NYSDOT 511NY Cameras", status: "unchecked", url: "https://511ny.org/", note: "10 traffic cameras; status shown per snapshot" },
+    { name: "511NY Cameras", status: "unchecked", url: "https://511ny.org/List/Cameras", note: "Basin traffic snapshots; publication time shown per image" },
     { name: "Reddit Community Feed", status: "unchecked", url: "https://www.reddit.com/r/binghamton/", note: "Community reports, not official warnings" },
     { name: "Broadcastify Scanner", status: "unchecked", url: "https://www.broadcastify.com/listen/ctid/1828", note: "External public safety audio; not monitored here" },
   ];
