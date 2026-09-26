@@ -32,17 +32,38 @@ export function durationMs(duration: string) {
   return match ? ((+(match[1] || 0) * 24 + +(match[2] || 0)) * 60 + +(match[3] || 0)) * 60_000 : 0;
 }
 
-export function precipitationTotal(entries: Array<{ validTime: string; value: number | null }>, hours: number, now = Date.now()) {
+function intervalOverlap(entries: Array<{ validTime: string; value: number | null }>, windowStart: number, windowEnd: number) {
   let total = 0, covered = 0;
-  const end = now + hours * 3600_000;
   for (const entry of entries) {
     if (entry.value === null || !Number.isFinite(entry.value)) continue;
     const [startText, duration] = entry.validTime.split("/");
     const start = Date.parse(startText), length = durationMs(duration || "");
     if (!Number.isFinite(start) || length <= 0) continue;
-    const overlap = Math.max(0, Math.min(end, start + length) - Math.max(now, start));
+    const overlap = Math.max(0, Math.min(windowEnd, start + length) - Math.max(windowStart, start));
     total += entry.value * overlap / length / 25.4;
     covered += overlap;
   }
-  return { inches: Math.round(total * 100) / 100, coverageHours: Math.round(covered / 3600_000 * 10) / 10 };
+  return { inches: total, covered };
+}
+
+export function precipitationTotal(entries: Array<{ validTime: string; value: number | null }>, hours: number, now = Date.now()) {
+  const { inches, covered } = intervalOverlap(entries, now, now + hours * 3600_000);
+  return { inches: Math.round(inches * 100) / 100, coverageHours: Math.round(covered / 3600_000 * 10) / 10 };
+}
+
+/** Heaviest rainfall inside any window of windowHours during the next horizonHours. */
+export function peakPrecipitationWindow(
+  entries: Array<{ validTime: string; value: number | null }>,
+  windowHours: number,
+  horizonHours: number,
+  now = Date.now(),
+) {
+  let peak = 0;
+  const lastOffset = Math.max(0, horizonHours - windowHours);
+  for (let offset = 0; offset <= lastOffset; offset++) {
+    const start = now + offset * 3600_000;
+    const { inches } = intervalOverlap(entries, start, start + windowHours * 3600_000);
+    if (inches > peak) peak = inches;
+  }
+  return Math.round(peak * 100) / 100;
 }

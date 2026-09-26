@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { BASIN_CENTER, BROOME_COUNTY, RADAR_FRAMES, basemapTileUrl, markerPercent, radarOverlayUrl, stormApproachView } from "@shared/radar";
+import { BASIN_CENTER, BROOME_COUNTY, RADAR_FRAMES, basemapTileUrl, fitCounty, frameLabel, markerPercent, radarOverlayUrl } from "@shared/radar";
 import type { GaugeData } from "@shared/schema";
 
-const view = stormApproachView();
+const view = fitCounty();
 const countyCorners = [
   markerPercent(BROOME_COUNTY.north, BROOME_COUNTY.west, view),
   markerPercent(BROOME_COUNTY.north, BROOME_COUNTY.east, view),
@@ -12,12 +12,14 @@ const countyCorners = [
 const countyPoints = countyCorners.map(corner => `${corner.left},${corner.top}`).join(" ");
 
 export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData[]; refreshKey?: number }) {
-  const [frame, setFrame] = useState(RADAR_FRAMES.length - 1);
+  const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [broken, setBroken] = useState(false);
+  const [overlayFailed, setOverlayFailed] = useState(false);
   const [liveTick, setLiveTick] = useState(0);
 
   useEffect(() => setBroken(false), [refreshKey, liveTick]);
+  useEffect(() => setOverlayFailed(false), [frame, refreshKey, liveTick]);
 
   useEffect(() => {
     if (!playing) return;
@@ -32,7 +34,7 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
     return () => clearInterval(timer);
   }, []);
 
-  const minutesAgo = RADAR_FRAMES[frame];
+  const current = RADAR_FRAMES[frame];
   const markers = gauges.filter(gauge =>
     typeof gauge.latitude === "number" && typeof gauge.longitude === "number" && !gauge.isReservoir,
   );
@@ -50,12 +52,13 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
             onError={() => setBroken(true)}
           />
         ))}
-        {!broken && (
+        {!broken && !overlayFailed && (
           <img
-            key={`radar-${minutesAgo}-${refreshKey}-${liveTick}`}
-            src={radarOverlayUrl(minutesAgo, view)}
-            alt="NEXRAD reflectivity centered on Broome County, New York"
+            key={`radar-${frameLabel(current)}-${refreshKey}-${liveTick}`}
+            src={radarOverlayUrl(current, view)}
+            alt="Radar reflectivity over Broome County, New York"
             className="absolute inset-0 h-full w-full mix-blend-screen"
+            onError={() => setOverlayFailed(true)}
           />
         )}
         <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -86,14 +89,17 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
         {broken && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-sm text-white">Basemap unavailable. Try refreshing.</div>
         )}
+        {!broken && overlayFailed && (
+          <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white/80">This frame is unavailable from the provider.</div>
+        )}
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-        <span>NEXRAD centered on {BROOME_COUNTY.name} · {minutesAgo === 0 ? "current" : `${minutesAgo} min ago`}</span>
+        <span>Broome County, NY · {frameLabel(current)}</span>
         <button type="button" className="rounded border border-border px-2 py-0.5" onClick={() => setPlaying(value => !value)}>
           {playing ? "Pause" : "Play"}
         </button>
       </div>
-      <p className="mt-1 text-[10px] text-muted-foreground">NEXRAD centered on Broome County, widened so rain moving in from the east is visible. The amber box is Broome County. © OpenStreetMap © CARTO · Iowa Environmental Mesonet</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">Past frames are observed NEXRAD. Future frames are the HRRR simulated reflectivity forecast, not a warning. The amber box is Broome County. © OpenStreetMap © CARTO · Iowa Environmental Mesonet</p>
     </div>
   );
 }

@@ -1637,7 +1637,7 @@ function StormBand({
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">Nor&apos;easter — Broome County</CardTitle>
         <p className="text-[10px] text-muted-foreground">
-          Live radar centered on Binghamton. The forecast is NWS Binghamton{forecast?.afd.issuedAt ? `, issued ${forecast.afd.issuedAt}` : ""}. Posts on X are not a warning.
+          Observed NEXRAD, then the HRRR reflectivity forecast, framed on Broome County. The text forecast is NWS Binghamton{forecast?.afd.issuedAt ? `, issued ${forecast.afd.issuedAt}` : ""}. Posts on X are not a warning.
         </p>
       </CardHeader>
       <CardContent>
@@ -1695,9 +1695,9 @@ function StormBand({
   );
 }
 
-// === Upper air imagery. Radar lives in the storm band. ===
-function ImageryPanel({ refreshToken = 0 }: { refreshToken?: number }) {
-  const [activeTab, setActiveTab] = useState<"pwat" | "850mb">("pwat");
+// === Broome radar, with Northeast-wide upper-air charts as secondary tabs. ===
+function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refreshToken?: number }) {
+  const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
   const [refreshKey, setRefreshKey] = useState(0);
   useEffect(() => { if (refreshToken) setRefreshKey(k => k + 1); }, [refreshToken]);
   const [failed, setFailed] = useState(false);
@@ -1711,12 +1711,14 @@ function ImageryPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   return (
     <Card className="bg-card border-border">
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-sm flex items-center gap-2">
             <Radio className="h-4 w-4" />
-            Upper Air
+            Broome radar
           </CardTitle>
           <div className="flex gap-1">
+            <Button variant={activeTab === "radar" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
+              onClick={() => setActiveTab("radar")}>Radar</Button>
             <Button variant={activeTab === "pwat" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
               onClick={() => setActiveTab("pwat")}>PWAT</Button>
             <Button variant={activeTab === "850mb" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
@@ -1729,8 +1731,9 @@ function ImageryPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       </CardHeader>
       <CardContent>
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
-          {failed && <div className="p-8 text-sm text-muted-foreground">Image unavailable from the provider. Try refreshing.</div>}
-          {!failed && (
+          {activeTab === "radar" && <BasinRadar gauges={gauges} refreshKey={refreshKey} />}
+          {failed && activeTab !== "radar" && <div className="p-8 text-sm text-muted-foreground">Image unavailable from the provider. Try refreshing.</div>}
+          {!failed && activeTab !== "radar" && (
             <img
               src={apiUrl(`/api/spc-images/${activeTab}?fresh=1&_=${refreshKey}`)}
               onError={() => setFailed(true)}
@@ -1740,10 +1743,11 @@ function ImageryPanel({ refreshToken = 0 }: { refreshToken?: number }) {
             />
           )}
         </div>
-        <p className="text-[10px] text-muted-foreground mt-1">
-          {activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
-           "850mb Wind/Temperature — SPC Mesoanalysis Sector 14 (NE US)"}
-        </p>
+        {activeTab !== "radar" && (
+          <p className="text-[10px] text-muted-foreground mt-1">
+            {activeTab === "pwat" ? "Precipitable water" : "850mb wind and temperature"} — SPC Sector 14, Northeast US, not Broome County.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -2160,7 +2164,7 @@ export default function Dashboard() {
               {/* NWS Weather + Forecast */}
               <WeatherPanel weather={weather.data} />
 
-              <ImageryPanel refreshToken={lastRefresh.getTime()} />
+              <ImageryPanel gauges={gaugesResp?.gauges} refreshToken={lastRefresh.getTime()} />
 
               {/* V4: QPF + Atmospheric detail (from AtmosphericPanel, kept for QPF chart) */}
               <AtmosphericPanel
