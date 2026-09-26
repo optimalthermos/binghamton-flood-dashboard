@@ -11,12 +11,49 @@ interface WebcamPanelProps {
   isLoading: boolean;
 }
 
-// Category label config
-const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
-  river: { label: "USGS RIVER", color: "text-blue-400 bg-blue-500/10 border-blue-500/30" },
-  weather: { label: "NWS / MESONET", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" },
-  traffic: { label: "NYSDOT", color: "text-muted-foreground bg-accent/40 border-border" },
-};
+function useCameraFrame(imageUrl: string, refreshInterval: number, fallbackPublishedAt?: string | null) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [publishedAt, setPublishedAt] = useState<string | null>(fallbackPublishedAt ?? null);
+  const [checkedAt, setCheckedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    async function load() {
+      try {
+        const response = await fetch(`${apiUrl(imageUrl)}?_=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("unavailable");
+        const blob = await response.blob();
+        if (cancelled) return;
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+        setPublishedAt(response.headers.get("last-modified") || fallbackPublishedAt || null);
+        setCheckedAt(Date.now());
+        setOffline(false);
+        setLoaded(true);
+      } catch {
+        if (!cancelled) setOffline(true);
+      }
+    }
+    load();
+    const interval = setInterval(load, Math.max(refreshInterval, 30) * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [imageUrl, refreshInterval, fallbackPublishedAt]);
+
+  return { src, offline, loaded, publishedAt, checkedAt };
+}
+
+function formatStamp(value: string | null) {
+  if (!value || Number.isNaN(Date.parse(value))) return null;
+  return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 
 function CameraThumb({
   cam,
@@ -29,24 +66,14 @@ function CameraThumb({
   onClick: () => void;
   isSelected: boolean;
 }) {
-  const [src, setSrc] = useState(`${apiUrl(cam.imageUrl)}?_=${Date.now()}`);
-  const [offline, setOffline] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  // Auto-refresh on interval
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setSrc(`${apiUrl(cam.imageUrl)}?_=${Date.now()}`);
-      setOffline(false);
-      setLoaded(false);
-    }, cam.refreshInterval * 1000);
-    return () => clearInterval(interval);
-  }, [cam.imageUrl, cam.refreshInterval]);
+  const frame = useCameraFrame(cam.imageUrl, cam.refreshInterval, cam.publishedAt);
+  const { src, offline, loaded, publishedAt, checkedAt } = frame;
 
   const category = cam.category || "traffic";
-  const catInfo = CATEGORY_LABELS[category] || CATEGORY_LABELS.traffic;
   const isRiver = category === "river";
-  const imageAge = cam.publishedAt ? Date.now() - Date.parse(cam.publishedAt) : null;
+  const imageAge = publishedAt ? Date.now() - Date.parse(publishedAt) : null;
+  const publishedLabel = formatStamp(publishedAt);
+  const checkedLabel = checkedAt ? formatStamp(new Date(checkedAt).toISOString()) : null;
 
   return (
     <button type="button" aria-label={`Enlarge ${cam.name}`} aria-pressed={isSelected}
@@ -67,12 +94,10 @@ function CameraThumb({
           </div>
         ) : (
           <img
-            src={src}
+            src={src || undefined}
             alt={cam.name}
             className="w-full h-full object-cover"
             width="640" height="360" decoding="async"
-            onError={() => setOffline(true)}
-            onLoad={() => setLoaded(true)}
             loading="lazy"
           />
         )}
@@ -88,13 +113,38 @@ function CameraThumb({
           {cam.description && size !== "small" && (
             <div className="text-[9px] text-white/55 line-clamp-1 mt-0.5">{cam.description}</div>
           )}
-          {cam.publishedAt && <div className="text-[10px] text-white/90">Published {new Date(cam.publishedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>}
+          {publishedLabel && <div className="text-[10px] text-white/90">Image {publishedLabel}</div>}
+          {checkedLabel && <div className="text-[9px] text-white/70">Checked {checkedLabel}</div>}
         </div>
 
         {/* Hover overlay */}
         <div className="absolute inset-0 bg-primary/0 group-hover:bg-primary/5 transition-colors" />
       </div>
     </button>
+  );
+}
+
+function ExpandedCamera({ cam, failed, onFail }: { cam: Webcam; failed: boolean; onFail: () => void }) {
+  const { src, offline, publishedAt } = useCameraFrame(cam.imageUrl, cam.refreshInterval, cam.publishedAt);
+  const publishedLabel = formatStamp(publishedAt);
+  if (failed || offline) {
+    return <div className="aspect-video flex items-center justify-center text-muted-foreground">Camera unavailable. Try again later.</div>;
+  }
+  return (
+    <>
+      <img
+        src={src || undefined}
+        alt={cam.name}
+        className="w-full object-contain max-h-80"
+        width="640" height="360"
+        onError={onFail}
+      />
+      <div className="absolute bottom-0 left-0 right-0 px-3 py-1.5 bg-gradient-to-t from-black/80 to-transparent">
+        <div className="text-sm font-medium text-white/90">{cam.name}</div>
+        {cam.description && <div className="text-xs text-white/60">{cam.description}</div>}
+        {publishedLabel && <div className="text-[11px] text-white/80">Image {publishedLabel}</div>}
+      </div>
+    </>
   );
 }
 
@@ -155,24 +205,12 @@ export function WebcamPanel({ webcamsData, isLoading }: WebcamPanelProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <p className="text-[10px] text-muted-foreground">Periodic snapshots, not verified live video. Older images are labeled; publication time may differ from capture time.</p>
+        <p className="text-[10px] text-muted-foreground">Snapshots refresh on their own. The image time is the publisher&apos;s timestamp and stays visible when that file is older than the last check.</p>
 
         {/* Selected camera expanded view */}
         {selectedCam && (
           <div className="relative rounded-lg overflow-hidden border border-primary/30">
-            {expandedFailed ? <div className="aspect-video flex items-center justify-center text-muted-foreground">Camera unavailable. Try again later.</div> : <img
-              src={`${apiUrl(selectedCam.imageUrl)}?r=${revision}`}
-              alt={selectedCam.name}
-              className="w-full object-contain max-h-80"
-              width="640" height="360"
-              onError={() => setExpandedFailed(true)}
-            />}
-            <div className="absolute bottom-0 left-0 right-0 px-3 py-1.5 bg-gradient-to-t from-black/80 to-transparent">
-              <div className="text-sm font-medium text-white/90">{selectedCam.name}</div>
-              {selectedCam.description && (
-                <div className="text-xs text-white/60">{selectedCam.description}</div>
-              )}
-            </div>
+            <ExpandedCamera cam={selectedCam} failed={expandedFailed} onFail={() => setExpandedFailed(true)} />
             <button
               aria-label="Close expanded camera"
               onClick={() => setSelected(null)}

@@ -42,7 +42,10 @@ test("basin traffic cameras proxy 511NY stills and skip video playlists", async 
       });
     }
     if (url.includes("usgs-nims-images")) {
-      return new Response(null, { status: 200, headers: { "last-modified": "Tue, 22 Sep 2026 04:00:00 GMT" } });
+      return new Response(Uint8Array.from([255, 216, 255, 217]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg", "last-modified": "Tue, 22 Sep 2026 04:00:00 GMT" },
+      });
     }
     throw new Error(`Unexpected test URL: ${url}`);
   }) as typeof fetch;
@@ -68,6 +71,10 @@ test("basin traffic cameras proxy 511NY stills and skip video playlists", async 
     assert.equal(image.headers.get("content-type"), "image/png");
     assert.equal(requested.some(url => url.includes("https://511ny.org/map/Cctv/4624")), true);
     assert.equal(requested.some(url => url.includes(".m3u8")), false);
+    const usgs = await originalFetch(`${base}/api/webcams/usgs/norwich-staff`);
+    assert.equal(usgs.status, 200);
+    assert.equal(usgs.headers.get("last-modified"), "Tue, 22 Sep 2026 04:00:00 GMT");
+    assert.equal(usgs.headers.get("cache-control"), "no-store");
     assert.equal(listAttempts >= 2, true);
   } finally {
     globalThis.fetch = originalFetch;

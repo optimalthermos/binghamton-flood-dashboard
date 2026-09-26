@@ -34,6 +34,16 @@ export const gaugeDataSchema = z.object({
   floodStoragePct: z.number().nullable().optional(),
   recessionRate: z.number().nullable().optional(),
   recessionPhase: z.enum(["FAST_RECESSION", "BASEFLOW", "LOADING"]).nullable().optional(),
+  latitude: z.number().nullable().optional(),
+  longitude: z.number().nullable().optional(),
+  impacts: z.array(z.object({
+    stage: z.number(),
+    statement: z.string(),
+  })).optional(),
+  recordCrest: z.object({
+    stage: z.number(),
+    occurredTime: z.string(),
+  }).nullable().optional(),
 });
 
 export const confluenceSyncSchema = z.object({

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
 import { apiUrl } from "@/lib/queryClient";
 import { WebcamPanel } from "@/components/WebcamPanel";
+import { BasinRadar } from "@/components/BasinRadar";
 import { CommunityFeedPanel } from "@/components/CommunityFeedPanel";
 import HamRadioPanel from "@/components/HamRadioPanel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -313,11 +314,11 @@ function ConfluenceSyncPanel({ gaugesResp }: { gaugesResp?: GaugesResponse }) {
   if (!cs) return null;
 
   const stateConfig: Record<string, { bg: string; border: string; label: string; desc: string; icon: React.ReactNode }> = {
-    BOTH_RISING: { bg: "bg-red-500/10", border: "border-red-500/30", label: "Convergent Loading", desc: "Both rivers rising — compound flood risk elevated", icon: <AlertTriangle className="h-5 w-5 text-red-400" /> },
-    BOTH_FALLING: { bg: "bg-emerald-500/10", border: "border-emerald-500/30", label: "Synchronized Recession", desc: "Basin draining — both rivers falling", icon: <CheckCircle className="h-5 w-5 text-emerald-400" /> },
-    SUSQ_RISING_CHEN_FALLING: { bg: "bg-amber-500/10", border: "border-amber-500/30", label: "Asymmetric", desc: "Susquehanna loading while Chenango drains", icon: <ArrowDownUp className="h-5 w-5 text-amber-400" /> },
-    CHEN_RISING_SUSQ_FALLING: { bg: "bg-amber-500/10", border: "border-amber-500/30", label: "Asymmetric", desc: "Chenango loading while Susquehanna drains", icon: <ArrowDownUp className="h-5 w-5 text-amber-400" /> },
-    STABLE: { bg: "bg-blue-500/10", border: "border-blue-500/30", label: "Stable", desc: "Both rivers stable — no significant trend", icon: <Minus className="h-5 w-5 text-blue-400" /> },
+    BOTH_RISING: { bg: "bg-red-500/10", border: "border-red-500/30", label: "Both stems rising", desc: "The Susquehanna at Conklin and the Chenango at Chenango Forks are both rising toward their junction in Binghamton.", icon: <AlertTriangle className="h-5 w-5 text-red-400" /> },
+    BOTH_FALLING: { bg: "bg-emerald-500/10", border: "border-emerald-500/30", label: "Both stems falling", desc: "Both rivers above the Binghamton junction are falling.", icon: <CheckCircle className="h-5 w-5 text-emerald-400" /> },
+    SUSQ_RISING_CHEN_FALLING: { bg: "bg-amber-500/10", border: "border-amber-500/30", label: "Susquehanna rising", desc: "The Susquehanna at Conklin is rising while the Chenango at Chenango Forks is not.", icon: <ArrowDownUp className="h-5 w-5 text-amber-400" /> },
+    CHEN_RISING_SUSQ_FALLING: { bg: "bg-amber-500/10", border: "border-amber-500/30", label: "Chenango rising", desc: "The Chenango at Chenango Forks is rising while the Susquehanna at Conklin is not.", icon: <ArrowDownUp className="h-5 w-5 text-amber-400" /> },
+    STABLE: { bg: "bg-blue-500/10", border: "border-blue-500/30", label: "Steady into the junction", desc: "Neither stem shows a rising or falling trend into the Binghamton confluence.", icon: <Minus className="h-5 w-5 text-blue-400" /> },
   };
 
   const cfg = stateConfig[cs.state] || stateConfig.STABLE;
@@ -963,7 +964,7 @@ function RadarPanel() {
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           <div className="absolute bottom-1 left-1 text-[9px] bg-black/60 px-1.5 py-0.5 rounded text-white/70">
-            IEM NEXRAD | 41.3°N–42.8°N, 76.8°W–74.8°W
+            IEM NEXRAD centered on Binghamton
           </div>
         </div>
       </CardContent>
@@ -1009,55 +1010,76 @@ function SPCImagesPanel() {
 }
 
 // === V3: Confluence Hydraulics Panel ===
+function stemLine(gauge?: GaugeData) {
+  if (!gauge || gauge.stage === null) return "stage unavailable";
+  const flow = gauge.flow !== null ? ` · ${Math.round(gauge.flow).toLocaleString()} cfs` : "";
+  return `${gauge.stage.toFixed(2)} ft · ${gauge.trend}${flow}`;
+}
+
+function nextImpact(gauge?: GaugeData) {
+  if (!gauge || gauge.stage === null || !gauge.impacts?.length) return null;
+  return gauge.impacts.find(impact => impact.stage > gauge.stage!) ?? null;
+}
+
 function ConfluenceHydraulicsPanel({ gaugesResp }: { gaugesResp?: GaugesResponse }) {
   if (!gaugesResp) return null;
   const gauges = gaugesResp.gauges;
   const conklin = gauges.find(g => g.id === "01503000");
   const chenango = gauges.find(g => g.id === "01512500");
-  const waverly = gauges.find(g => g.id === "01515000");
-  const windsor = gauges.find(g => g.id === "01502731");
-
-  if (!conklin?.flow || !chenango?.flow) return null;
-
-  const ratio = conklin.flow / chenango.flow;
-  const ratioLabel = ratio > 2 ? "Susquehanna dominant" : ratio < 0.5 ? "Chenango dominant" : "Near parity";
-  const ratioColor = ratio > 2 ? "text-blue-400" : ratio < 0.5 ? "text-emerald-400" : "text-red-400";
-
-  const dischargeChange = windsor?.flow != null ? conklin.flow - windsor.flow : null;
+  const binghamton = gauges.find(g => g.id === "01503500");
+  const vestal = gauges.find(g => g.id === "01513500");
+  const gaugedInflow = conklin?.flow != null && chenango?.flow != null ? conklin.flow + chenango.flow : null;
+  const places = [chenango, binghamton, conklin].filter((gauge): gauge is GaugeData => !!gauge);
+  const upcoming = places.map(gauge => ({ gauge, impact: nextImpact(gauge) })).filter(item => item.impact);
 
   return (
     <Card className="bg-card border-border">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-2 mb-3">
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
           <ArrowDownUp className="h-4 w-4 text-primary" />
-          <h3 className="font-semibold text-sm">Confluence Hydraulics</h3>
+          <h3 className="font-semibold text-sm">Where the rivers meet</h3>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-accent/50 rounded p-2.5">
-            <div className="text-xs text-muted-foreground mb-1">Q Ratio (Conklin / Chenango)</div>
-            <div className={`text-xl font-bold tabular-nums ${ratioColor}`}>{ratio.toFixed(2)}:1</div>
-            <div className="text-xs text-muted-foreground">{ratioLabel}</div>
-            <div className="text-[10px] text-muted-foreground mt-1">
-              {Math.round(conklin.flow!).toLocaleString()} / {Math.round(chenango.flow!).toLocaleString()} cfs
-            </div>
+        <p className="text-xs text-muted-foreground">
+          The Chenango comes south through Chenango Forks and joins the Susquehanna in Binghamton. The Susquehanna arrives from Windsor and Conklin, on the east. The Binghamton gauge sits on the Susquehanna just downstream of that junction. Vestal is the next gauge downstream, to the west.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+          <div className="rounded bg-emerald-500/10 p-2">
+            <div className="text-muted-foreground">Chenango, upstream</div>
+            <div className="font-medium">Chenango Forks</div>
+            <div>{stemLine(chenango)}</div>
           </div>
-          <div className="bg-accent/50 rounded p-2.5">
-            <div className="text-xs text-muted-foreground mb-1">Windsor to Conklin discharge change</div>
-            {dischargeChange !== null ? (
-              <>
-                <div className="text-xl font-bold tabular-nums">{dischargeChange > 0 ? "+" : ""}{Math.round(dischargeChange).toLocaleString()} cfs</div>
-                <div className="text-xs text-muted-foreground">Difference between the two gauges, not a measured tributary inflow</div>
-              </>
-            ) : (
-              <div className="text-sm text-muted-foreground">Windsor discharge unavailable</div>
-            )}
+          <div className="rounded bg-amber-500/10 p-2">
+            <div className="text-muted-foreground">Junction gauge</div>
+            <div className="font-medium">Binghamton</div>
+            <div>{stemLine(binghamton)}</div>
+          </div>
+          <div className="rounded bg-sky-500/10 p-2">
+            <div className="text-muted-foreground">Susquehanna, upstream</div>
+            <div className="font-medium">Conklin</div>
+            <div>{stemLine(conklin)}</div>
           </div>
         </div>
-        {waverly?.flow && conklin?.flow && (
-          <div className="mt-2 text-xs text-muted-foreground bg-accent/30 rounded p-2">
-            <span className="font-medium">Downstream verification:</span>{" "}
-            Waverly {Math.round(waverly.flow).toLocaleString()} cfs ({waverly.trend})
-            — {waverly.flow > conklin.flow ? "accumulating" : "attenuating"} from Conklin
+        <div className="text-xs text-muted-foreground">
+          {gaugedInflow !== null
+            ? `Gauged flow on the two stems is ${Math.round(gaugedInflow).toLocaleString()} cfs. That sum is not the Binghamton discharge: Castle Creek and other ungauged tributaries join before the city gauge, and the stems do not arrive at the same moment.`
+            : "Combined stem flow is unavailable until both Conklin and Chenango Forks report discharge."}
+          {binghamton?.flow != null ? ` Binghamton is observing ${Math.round(binghamton.flow).toLocaleString()} cfs.` : ""}
+          {vestal?.flow != null ? ` Vestal, downstream, is ${Math.round(vestal.flow).toLocaleString()} cfs (${vestal.trend}).` : ""}
+        </div>
+        {upcoming.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs font-medium">Next published impact above the current stage</div>
+            {upcoming.map(({ gauge, impact }) => (
+              <div key={gauge.id} className="rounded border border-border bg-accent/30 p-2 text-xs">
+                <div className="font-medium">{gauge.name} at {impact!.stage} ft</div>
+                <p className="mt-1 text-muted-foreground">{impact!.statement}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        {binghamton?.recordCrest && (
+          <div className="text-[11px] text-muted-foreground">
+            Binghamton record crest on file: {binghamton.recordCrest.stage} ft on {new Date(binghamton.recordCrest.occurredTime).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}.
           </div>
         )}
       </CardContent>
@@ -1590,7 +1612,7 @@ function BasinStatePanel({ groundwater, soilMoisture, surfaceObs }: {
 }
 
 // === V4: Combined Imagery Panel (Radar + PWAT + 850mb tabs) ===
-function ImageryPanel() {
+function ImageryPanel({ gauges }: { gauges?: GaugeData[] }) {
   const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
   const [refreshKey, setRefreshKey] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -1625,15 +1647,7 @@ function ImageryPanel() {
       <CardContent>
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
           {failed && <div className="p-8 text-sm text-muted-foreground">Image unavailable from the provider. Try refreshing.</div>}
-          {!failed && activeTab === "radar" && (
-            <img
-              src={apiUrl(`/api/radar-image?_=${refreshKey}`)}
-              alt="NEXRAD Radar — Southern Tier NY"
-              className="w-full h-auto"
-              style={{ minHeight: 180 }}
-              onError={() => setFailed(true)}
-            />
-          )}
+          {activeTab === "radar" && <BasinRadar gauges={gauges} refreshKey={refreshKey} />}
           {!failed && (activeTab === "pwat" || activeTab === "850mb") && (
             <img
               src={apiUrl(`/api/spc-images/${activeTab}?_=${refreshKey}`)}
@@ -1645,7 +1659,7 @@ function ImageryPanel() {
           )}
         </div>
         <p className="text-[10px] text-muted-foreground mt-1">
-          {activeTab === "radar" ? "IEM NEXRAD | 41.3°N–42.8°N, 76.8°W–74.8°W" :
+          {activeTab === "radar" ? "Base reflectivity centered on Binghamton." :
            activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
            "850mb Wind/Temperature — SPC Mesoanalysis Sector 14 (NE US)"}
         </p>
@@ -2056,7 +2070,7 @@ export default function Dashboard() {
               <WeatherPanel weather={weather.data} />
 
               {/* V4: Imagery Panel (tabbed Radar / PWAT / 850mb) */}
-              <ImageryPanel />
+              <ImageryPanel gauges={gaugesResp?.gauges} />
 
               {/* V4: QPF + Atmospheric detail (from AtmosphericPanel, kept for QPF chart) */}
               <AtmosphericPanel
