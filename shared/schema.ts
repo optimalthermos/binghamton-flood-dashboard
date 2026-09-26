@@ -343,6 +343,25 @@ export const communityFeedSchema = z.object({
   sources: z.array(z.string()).optional(),
 });
 
+export const stormPostSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  createdAt: z.string(),
+  author: z.string(),
+  authorName: z.string(),
+  url: z.string(),
+  imageUrl: z.string().nullable(),
+});
+
+export const stormPostsSchema = z.object({
+  posts: z.array(stormPostSchema),
+  lastUpdated: z.string(),
+  source: z.string(),
+  searchUrl: z.string(),
+});
+
 export type Webcam = z.infer<typeof webcamSchema>;
 export type CommunityPost = z.infer<typeof communityPostSchema>;
 export type CommunityFeed = z.infer<typeof communityFeedSchema>;
+export type StormPost = z.infer<typeof stormPostSchema>;
+export type StormPosts = z.infer<typeof stormPostsSchema>;

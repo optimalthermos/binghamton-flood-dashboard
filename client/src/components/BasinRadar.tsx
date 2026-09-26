@@ -1,15 +1,23 @@
 import { useEffect, useState } from "react";
-import { BASIN_CENTER, BROOME_COUNTY, RADAR_FRAMES, basemapTileUrl, fitCounty, markerPercent, radarOverlayUrl } from "@shared/radar";
+import { BASIN_CENTER, BROOME_COUNTY, RADAR_FRAMES, basemapTileUrl, markerPercent, radarOverlayUrl, stormApproachView } from "@shared/radar";
 import type { GaugeData } from "@shared/schema";
 
-const view = fitCounty();
+const view = stormApproachView();
+const countyCorners = [
+  markerPercent(BROOME_COUNTY.north, BROOME_COUNTY.west, view),
+  markerPercent(BROOME_COUNTY.north, BROOME_COUNTY.east, view),
+  markerPercent(BROOME_COUNTY.south, BROOME_COUNTY.east, view),
+  markerPercent(BROOME_COUNTY.south, BROOME_COUNTY.west, view),
+];
+const countyPoints = countyCorners.map(corner => `${corner.left},${corner.top}`).join(" ");
 
 export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData[]; refreshKey?: number }) {
   const [frame, setFrame] = useState(RADAR_FRAMES.length - 1);
   const [playing, setPlaying] = useState(true);
   const [broken, setBroken] = useState(false);
+  const [liveTick, setLiveTick] = useState(0);
 
-  useEffect(() => setBroken(false), [refreshKey]);
+  useEffect(() => setBroken(false), [refreshKey, liveTick]);
 
   useEffect(() => {
     if (!playing) return;
@@ -18,6 +26,11 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
     }, 700);
     return () => clearInterval(timer);
   }, [playing]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setLiveTick(tick => tick + 1), 120_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const minutesAgo = RADAR_FRAMES[frame];
   const markers = gauges.filter(gauge =>
@@ -39,12 +52,15 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
         ))}
         {!broken && (
           <img
-            key={`radar-${minutesAgo}-${refreshKey}`}
+            key={`radar-${minutesAgo}-${refreshKey}-${liveTick}`}
             src={radarOverlayUrl(minutesAgo, view)}
-            alt="NEXRAD reflectivity over Broome County, New York"
+            alt="NEXRAD reflectivity centered on Broome County, New York"
             className="absolute inset-0 h-full w-full mix-blend-screen"
           />
         )}
+        <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <polygon points={countyPoints} fill="none" stroke="rgba(251,191,36,0.9)" strokeWidth="0.6" />
+        </svg>
         {markers.map(gauge => {
           const spot = markerPercent(gauge.latitude!, gauge.longitude!, view);
           if (spot.left < 0 || spot.left > 100 || spot.top < 0 || spot.top > 100) return null;
@@ -72,12 +88,12 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
         )}
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-        <span>NEXRAD over {BROOME_COUNTY.name} · {minutesAgo === 0 ? "current" : `${minutesAgo} min ago`}</span>
+        <span>NEXRAD centered on {BROOME_COUNTY.name} · {minutesAgo === 0 ? "current" : `${minutesAgo} min ago`}</span>
         <button type="button" className="rounded border border-border px-2 py-0.5" onClick={() => setPlaying(value => !value)}>
           {playing ? "Pause" : "Play"}
         </button>
       </div>
-      <p className="mt-1 text-[10px] text-muted-foreground">Broome County, New York, including Binghamton where the Chenango joins the Susquehanna. © OpenStreetMap © CARTO · Iowa Environmental Mesonet</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">NEXRAD centered on Broome County, widened so rain moving in from the east is visible. The amber box is Broome County. © OpenStreetMap © CARTO · Iowa Environmental Mesonet</p>
     </div>
   );
 }

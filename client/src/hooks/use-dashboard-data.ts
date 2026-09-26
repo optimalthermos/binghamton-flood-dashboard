@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GaugesResponse, ForecastData, WeatherData, EnsembleData, NewsData } from "@shared/schema";
+import type { GaugesResponse, ForecastData, WeatherData, EnsembleData, NewsData, StormPosts } from "@shared/schema";
 import { requestFreshData } from "@/lib/queryClient";
 
 const REFRESH_INTERVAL = 300000; // 5 minutes
@@ -92,6 +92,12 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
+  const stormPosts = useQuery<StormPosts>({
+    queryKey: ["/api/storm-posts"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
   const refreshAll = useCallback((includeDaily = false) => {
     if (includeDaily) requestFreshData();
     const keys = [
@@ -106,6 +112,7 @@ export function useDashboardData() {
       ["/api/gridpoint-data"],
       ["/api/predictive-outlook"],
       ["/api/community-feed"],
+      ["/api/storm-posts"],
       ["/api/webcams"],
     ];
     if (includeDaily) keys.push(["/api/historical-stats"], ["/api/soil-moisture"]);
@@ -132,7 +139,7 @@ export function useDashboardData() {
     }
   }, [gauges.dataUpdatedAt, gauges.isError, gauges.data]);
 
-  const isAnyLoading = gauges.isFetching || forecast.isFetching || weather.isFetching || news.isFetching || communityFeed.isFetching;
+  const isAnyLoading = gauges.isFetching || forecast.isFetching || weather.isFetching || news.isFetching || communityFeed.isFetching || stormPosts.isFetching;
   const isAnyError = gauges.isError || forecast.isError || weather.isError;
   const isDataStale = !lastRefresh.getTime() || Date.now() - lastRefresh.getTime() > 10 * 60 * 1000 ||
     [gauges, forecast, weather].some(q => (q.data as any)?.stale);
@@ -154,6 +161,7 @@ export function useDashboardData() {
     predictiveOutlook,
     webcams,
     communityFeed,
+    stormPosts,
     refreshAll,
     countdown,
     lastRefresh,

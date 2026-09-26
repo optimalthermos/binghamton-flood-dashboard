@@ -73,6 +73,11 @@ export function fitCounty(
   return basinView(centerLat, centerLon, 8, width, height);
 }
 
+/** Wider than the county, still centered on Binghamton, so rain east of Broome is in frame. */
+export function stormApproachView(width = RADAR_WIDTH, height = RADAR_HEIGHT) {
+  return basinView(BASIN_CENTER.latitude, BASIN_CENTER.longitude, 9, width, height);
+}
+
 export function unproject(pixelX: number, pixelY: number, zoom: number) {
   const scale = 2 ** zoom * TILE;
   const longitude = pixelX / scale * 360 - 180;

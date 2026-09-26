@@ -23,10 +23,11 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ReferenceLine,
   Legend, ResponsiveContainer, LineChart, Line, BarChart, Bar, Tooltip as RechartsTooltip,
 } from "recharts";
+import { STORM_SEARCH_URL } from "@shared/stormPosts";
 import type {
   GaugeData, WeatherData, GaugesResponse, EnsembleData, NewsData,
   GroundwaterData, SurfaceObs, GridpointData, HistoricalStats, HistoricalStatEntry, SoilMoisture,
-  PredictiveOutlook, ForecastData,
+  PredictiveOutlook, ForecastData, StormPosts,
 } from "@shared/schema";
 
 // === Utility helpers ===
@@ -1611,40 +1612,92 @@ function BasinStatePanel({ groundwater, soilMoisture, surfaceObs }: {
   );
 }
 
-function NorEasterPanel({ forecast, weather }: { forecast?: ForecastData; weather?: WeatherData }) {
+function StormBand({
+  gauges,
+  forecast,
+  weather,
+  stormPosts,
+  postsLoading = false,
+  refreshToken = 0,
+}: {
+  gauges?: GaugeData[];
+  forecast?: ForecastData;
+  weather?: WeatherData;
+  stormPosts?: StormPosts;
+  postsLoading?: boolean;
+  refreshToken?: number;
+}) {
   const storm = forecast?.afd.norEaster;
-  if (!storm) return null;
   const weekend = (weather?.forecast || []).filter(period => /saturday|sunday|monday/i.test(period.name)).slice(0, 6);
+  const posts = stormPosts?.posts || [];
+  const searchUrl = stormPosts?.searchUrl || STORM_SEARCH_URL;
+
   return (
     <Card className="bg-card border-border">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">Nor&apos;easter — NWS Binghamton</CardTitle>
-        <p className="text-[10px] text-muted-foreground">Issued {forecast?.afd.issuedAt}. Covers the Binghamton office area, including Broome County.</p>
+        <CardTitle className="text-sm">Nor&apos;easter — Broome County</CardTitle>
+        <p className="text-[10px] text-muted-foreground">
+          Live radar centered on Binghamton. The forecast is NWS Binghamton{forecast?.afd.issuedAt ? `, issued ${forecast.afd.issuedAt}` : ""}. Posts on X are not a warning.
+        </p>
       </CardHeader>
-      <CardContent className="space-y-3">
-        {storm.headline && <p className="text-sm">{storm.headline}</p>}
-        {storm.detail && <p className="text-xs text-muted-foreground leading-relaxed">{storm.detail}</p>}
-        {weekend.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {weekend.map(period => (
-              <div key={period.name} className="rounded bg-accent/40 p-2 text-xs">
-                <div className="font-medium">{period.name}</div>
-                <div>{period.temp !== null ? `${period.temp}°` : "—"} · {period.shortForecast}</div>
-                {period.precipProbability !== null && period.precipProbability !== undefined && (
-                  <div className="text-muted-foreground">{period.precipProbability}% chance of precipitation</div>
-                )}
-              </div>
-            ))}
+      <CardContent>
+        <div className="grid grid-cols-1 xl:grid-cols-11 gap-4">
+          <div className="xl:col-span-7">
+            <BasinRadar gauges={gauges} refreshKey={refreshToken} />
           </div>
-        )}
+          <div className="xl:col-span-4 space-y-3">
+            {storm?.headline && <p className="text-sm">{storm.headline}</p>}
+            {storm?.detail && (
+              <p className="max-h-48 overflow-y-auto text-xs text-muted-foreground leading-relaxed">{storm.detail}</p>
+            )}
+            {!storm && (
+              <p className="text-xs text-muted-foreground">The latest NWS Binghamton discussion does not mention a nor&apos;easter.</p>
+            )}
+            {weekend.length > 0 && (
+              <div className="grid grid-cols-2 gap-2">
+                {weekend.map(period => (
+                  <div key={period.name} className="rounded bg-accent/40 p-2 text-xs">
+                    <div className="font-medium">{period.name}</div>
+                    <div>{period.temp !== null ? `${period.temp}°` : "—"} · {period.shortForecast}</div>
+                    {period.precipProbability !== null && period.precipProbability !== undefined && (
+                      <div className="text-muted-foreground">{period.precipProbability}% chance of precipitation</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] font-medium">Posts on X, not a warning</p>
+                <a href={searchUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-muted-foreground hover:text-primary">
+                  Wider conversation
+                </a>
+              </div>
+              {!postsLoading && posts.length === 0 && (
+                <p className="text-xs text-muted-foreground">No recent storm posts.</p>
+              )}
+              {posts.map(post => (
+                <a key={post.id} href={post.url} target="_blank" rel="noopener noreferrer" className="flex gap-2 rounded border border-border p-2 hover:bg-accent/30">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] text-muted-foreground">@{post.author}</p>
+                    <p className="text-xs leading-snug line-clamp-4">{post.text}</p>
+                  </div>
+                  {post.imageUrl && (
+                    <img src={post.imageUrl} alt="" className="h-12 w-12 rounded object-cover" />
+                  )}
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
 }
 
-// === V4: Combined Imagery Panel (Radar + PWAT + 850mb tabs) ===
-function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refreshToken?: number }) {
-  const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
+// === Upper air imagery. Radar lives in the storm band. ===
+function ImageryPanel({ refreshToken = 0 }: { refreshToken?: number }) {
+  const [activeTab, setActiveTab] = useState<"pwat" | "850mb">("pwat");
   const [refreshKey, setRefreshKey] = useState(0);
   useEffect(() => { if (refreshToken) setRefreshKey(k => k + 1); }, [refreshToken]);
   const [failed, setFailed] = useState(false);
@@ -1661,11 +1714,9 @@ function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refr
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-2">
             <Radio className="h-4 w-4" />
-            Radar + Upper Air
+            Upper Air
           </CardTitle>
           <div className="flex gap-1">
-            <Button variant={activeTab === "radar" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
-              onClick={() => setActiveTab("radar")}>Radar</Button>
             <Button variant={activeTab === "pwat" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
               onClick={() => setActiveTab("pwat")}>PWAT</Button>
             <Button variant={activeTab === "850mb" ? "default" : "ghost"} size="sm" className="h-6 px-2 text-xs"
@@ -1679,8 +1730,7 @@ function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refr
       <CardContent>
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
           {failed && <div className="p-8 text-sm text-muted-foreground">Image unavailable from the provider. Try refreshing.</div>}
-          {activeTab === "radar" && <BasinRadar gauges={gauges} refreshKey={refreshKey} />}
-          {!failed && (activeTab === "pwat" || activeTab === "850mb") && (
+          {!failed && (
             <img
               src={apiUrl(`/api/spc-images/${activeTab}?fresh=1&_=${refreshKey}`)}
               onError={() => setFailed(true)}
@@ -1691,8 +1741,7 @@ function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refr
           )}
         </div>
         <p className="text-[10px] text-muted-foreground mt-1">
-          {activeTab === "radar" ? "Base reflectivity framed on Broome County, New York." :
-           activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
+          {activeTab === "pwat" ? "Precipitable Water — SPC Mesoanalysis Sector 14 (NE US)" :
            "850mb Wind/Temperature — SPC Mesoanalysis Sector 14 (NE US)"}
         </p>
       </CardContent>
@@ -1942,7 +1991,7 @@ export default function Dashboard() {
   const {
     gauges, forecast, weather, ensemble, news,
     groundwater, surfaceObs, gridpointData, historicalStats, soilMoisture,
-    predictiveOutlook, webcams, communityFeed,
+    predictiveOutlook, webcams, communityFeed, stormPosts,
     refreshAll, countdown, lastRefresh,
     isAnyLoading, connectionStatus, isDataStale,
   } = useDashboardData();
@@ -1999,6 +2048,15 @@ export default function Dashboard() {
 
         <main className="max-w-[1600px] mx-auto p-4 space-y-4">
           {isDataStale && <StaleBanner />}
+
+          <StormBand
+            gauges={gaugesResp?.gauges}
+            forecast={forecast.data}
+            weather={weather.data}
+            stormPosts={stormPosts.data}
+            postsLoading={stormPosts.isLoading}
+            refreshToken={lastRefresh.getTime()}
+          />
 
           {/* KPI Row */}
           <KPICards gaugesResp={gaugesResp} weather={weather.data} outlookData={outlookData} />
@@ -2101,10 +2159,8 @@ export default function Dashboard() {
 
               {/* NWS Weather + Forecast */}
               <WeatherPanel weather={weather.data} />
-              <NorEasterPanel forecast={forecast.data} weather={weather.data} />
 
-              {/* V4: Imagery Panel (tabbed Radar / PWAT / 850mb) */}
-              <ImageryPanel gauges={gaugesResp?.gauges} refreshToken={lastRefresh.getTime()} />
+              <ImageryPanel refreshToken={lastRefresh.getTime()} />
 
               {/* V4: QPF + Atmospheric detail (from AtmosphericPanel, kept for QPF chart) */}
               <AtmosphericPanel

@@ -5,6 +5,7 @@ import { promisify } from "util";
 import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, riverForecasts, weatherPoint, flowEnsembles, officialCoordinate, officialImpacts, officialRecordCrest, clearVolatileOfficialCache } from "./monitoring";
 import { isWeatherReport } from "../shared/community";
 import { norEasterBrief } from "../shared/noreaster";
+import { STORM_SEARCH_URL, selectStormPosts } from "../shared/stormPosts";
 import { observationState, precipitationTotal } from "../shared/monitoring";
 import { buildFloodPathways } from "../shared/scenarios";
 import { createHash } from "crypto";
@@ -1557,6 +1558,20 @@ export async function registerRoutes(
 
   // V5: Community feed (Reddit RSS)
   cachedRoute("/api/community-feed", "community-feed", fetchCommunityFeed, 5 * 60 * 1000);
+
+  async function fetchStormPosts() {
+    const res = await fetchWithUA("https://api.fxtwitter.com/2/profile/NWSBinghamton/statuses?count=40", 12000);
+    if (!res.ok) throw new Error(`Storm posts returned ${res.status}`);
+    const body = await res.json();
+    return {
+      posts: selectStormPosts(body?.results),
+      lastUpdated: new Date().toISOString(),
+      source: "NWSBinghamton",
+      searchUrl: STORM_SEARCH_URL,
+    };
+  }
+
+  cachedRoute("/api/storm-posts", "storm-posts", fetchStormPosts, 5 * 60 * 1000);
 
   app.get("/api/spc-images/:type", async (req, res) => {
     const type = req.params.type;
