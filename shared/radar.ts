@@ -78,6 +78,18 @@ export function stormApproachView(width = RADAR_WIDTH, height = RADAR_HEIGHT) {
   return basinView(BASIN_CENTER.latitude, BASIN_CENTER.longitude, 9, width, height);
 }
 
+/** Local-radar-sized sector. Binghamton is the center, not Albany. */
+export function approachRadarView(width = RADAR_WIDTH, height = RADAR_HEIGHT) {
+  return basinView(BASIN_CENTER.latitude, BASIN_CENTER.longitude, 7, width, height);
+}
+
+export const RADAR_PLACES = [
+  { name: "Binghamton", latitude: BASIN_CENTER.latitude, longitude: BASIN_CENTER.longitude },
+  { name: "Scranton", latitude: 41.4089, longitude: -75.6624 },
+  { name: "Elmira", latitude: 42.0898, longitude: -76.8077 },
+  { name: "Oneonta", latitude: 42.4529, longitude: -75.0638 },
+];
+
 export function unproject(pixelX: number, pixelY: number, zoom: number) {
   const scale = 2 ** zoom * TILE;
   const longitude = pixelX / scale * 360 - 180;
@@ -98,8 +110,28 @@ function mercatorMeters(latitude: number, longitude: number) {
   return { x, y };
 }
 
-/** One radar image in the same web-mercator box as the basemap, so it cannot drift onto another state. */
-export function radarOverlayUrl(minutesAgo: number, view = fitCounty()) {
+export type RadarFrame =
+  | { kind: "observed"; minutesAgo: number }
+  | { kind: "forecast"; minutesAhead: number };
+
+/** Observed NEXRAD every 10 minutes, then the HRRR forecast through 18 hours. */
+export const RADAR_FRAMES: RadarFrame[] = [
+  ...[50, 40, 30, 20, 10, 0].map(minutesAgo => ({ kind: "observed" as const, minutesAgo })),
+  ...[60, 120, 180, 240, 360, 480, 720, 1080].map(minutesAhead => ({ kind: "forecast" as const, minutesAhead })),
+];
+
+export function frameLabel(frame: RadarFrame) {
+  if (frame.kind === "observed") return frame.minutesAgo <= 0 ? "now" : `${frame.minutesAgo} min ago`;
+  const hours = frame.minutesAhead / 60;
+  return `+${Number.isInteger(hours) ? hours : hours.toFixed(1)} h HRRR forecast`;
+}
+
+/** HRRR layer name. 60 minutes ahead is refd_0060. */
+export function forecastLayer(minutesAhead: number) {
+  return `refd_${String(Math.max(0, minutesAhead)).padStart(4, "0")}`;
+}
+
+function overlayUrl(endpoint: string, layer: string, view: { left: number; top: number; width: number; height: number; zoom: number }) {
   const extent = viewExtent(view);
   const sw = mercatorMeters(extent.south, extent.west);
   const ne = mercatorMeters(extent.north, extent.east);
@@ -107,7 +139,7 @@ export function radarOverlayUrl(minutesAgo: number, view = fitCounty()) {
     SERVICE: "WMS",
     REQUEST: "GetMap",
     VERSION: "1.1.1",
-    LAYERS: radarLayer(minutesAgo),
+    LAYERS: layer,
     SRS: "EPSG:3857",
     BBOX: `${sw.x},${sw.y},${ne.x},${ne.y}`,
     WIDTH: String(view.width),
@@ -115,7 +147,15 @@ export function radarOverlayUrl(minutesAgo: number, view = fitCounty()) {
     FORMAT: "image/png",
     TRANSPARENT: "TRUE",
   });
-  return `https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?${params.toString()}`;
+  return `${endpoint}?${params.toString()}`;
+}
+
+/** One radar image in the same web-mercator box as the basemap, so it cannot drift onto another state. */
+export function radarOverlayUrl(frame: RadarFrame, view = fitCounty()) {
+  if (frame.kind === "forecast") {
+    return overlayUrl("https://mesonet.agron.iastate.edu/cgi-bin/wms/hrrr/refd.cgi", forecastLayer(frame.minutesAhead), view);
+  }
+  return overlayUrl("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi", radarLayer(frame.minutesAgo), view);
 }
 
 export function markerPercent(latitude: number, longitude: number, view = fitCounty()) {
@@ -125,9 +165,6 @@ export function markerPercent(latitude: number, longitude: number, view = fitCou
     top: (point.y - view.top) / view.height * 100,
   };
 }
-
-/** IEM loop layers, oldest first. 0 is the current composite. */
-export const RADAR_FRAMES = [50, 40, 30, 20, 10, 0];
 
 export function radarLayer(minutesAgo: number) {
   if (minutesAgo <= 0) return "nexrad-n0q-900913";
@@ -139,5 +176,5 @@ export function radarTileUrl(minutesAgo: number, zoom: number, x: number, y: num
 }
 
 export function basemapTileUrl(zoom: number, x: number, y: number) {
-  return `https://basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
+  return `https://basemaps.cartocdn.com/light_all/${zoom}/${x}/${y}.png`;
 }

@@ -6,7 +6,8 @@ import { activeAlerts, gaugeMetadata, officialThresholds, officialObservations, 
 import { isWeatherReport } from "../shared/community";
 import { norEasterBrief } from "../shared/noreaster";
 import { STORM_SEARCH_URL, selectStormPosts } from "../shared/stormPosts";
-import { observationState, precipitationTotal } from "../shared/monitoring";
+import { observationState, peakPrecipitationWindow, precipitationTotal } from "../shared/monitoring";
+import { horizonScore, scoreBasin, scoreToRiskLevel } from "../shared/risk";
 import { buildFloodPathways } from "../shared/scenarios";
 import { createHash } from "crypto";
 import type {
@@ -677,7 +678,9 @@ async function fetchGridpointData() {
       next24h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 24),
       next48h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 48),
       next72h: precipitationTotal(p?.quantitativePrecipitation?.values || [], 72),
+      peak6h: peakPrecipitationWindow(p?.quantitativePrecipitation?.values || [], 6, 48),
     },
+    snowfall48h: precipitationTotal(p?.snowfallAmount?.values || [], 48),
   };
 }
 
@@ -788,13 +791,6 @@ const HISTORICAL_FLOODS = [
   },
 ];
 
-function scoreToRiskLevel(score: number): string {
-  if (score <= 25) return "LOW";
-  if (score <= 50) return "MODERATE";
-  if (score <= 70) return "ELEVATED";
-  return "HIGH";
-}
-
 async function fetchPredictiveOutlook() {
   // Fetch all upstream data, degrading gracefully on failures
   const [gaugeResult, gridpointResult, soilMoistureResult, groundwaterResult, weatherResult] = await Promise.allSettled([
@@ -845,26 +841,26 @@ async function fetchPredictiveOutlook() {
     basinDetail = "Basin stable";
   }
 
-  // === FACTOR 3: QPF Next 48h (weight 0.20) ===
-  let qpfScore = 0;
-  let qpfDetail = "No QPF data";
-  let qpf48Total = 0;
-  if (gridpoint?.qpfTimeline) {
-    qpf48Total = gridpoint.precipitation.next48h.inches;
-    if (qpf48Total <= 0) qpfScore = 0;
-    else if (qpf48Total <= 0.5) qpfScore = 30;
-    else if (qpf48Total <= 1) qpfScore = 50;
-    else if (qpf48Total <= 2) qpfScore = 75;
-    else qpfScore = Math.min(100, 75 + (qpf48Total - 2) * 12.5);
-    qpfDetail = `${qpf48Total.toFixed(2)}" QPF in next 48h`;
+  const qpf48Total = gridpoint.precipitation.next48h.inches;
+  const qpf24Total = gridpoint.precipitation.next24h.inches;
+  const qpf72Total = gridpoint.precipitation.next72h.inches;
+  const rain6hInches = gridpoint.precipitation.peak6h ?? 0;
+  const snowInches = gridpoint.snowfall48h?.inches ?? 0;
+  const rainSnowHours = gridpoint.rainSnowTransition && gridpoint.rainSnowTransition.hoursUntil >= 0 && gridpoint.rainSnowTransition.hoursUntil <= 48
+    ? gridpoint.rainSnowTransition.hoursUntil
+    : null;
+  const windEnd = Date.now() + 48 * 3600_000;
+  let windMph: number | null = null;
+  for (const point of gridpoint.windTimeline || []) {
+    const at = Date.parse(point.time);
+    if (!Number.isFinite(at) || at < Date.now() || at > windEnd) continue;
+    windMph = windMph === null ? point.speed : Math.max(windMph, point.speed);
   }
 
-  // === FACTOR 4: Soil Moisture (weight 0.10) ===
-  let soilScore = 50;
+  // === FACTOR: Soil Moisture ===
   let soilDetail = "Unknown";
   const soilPct = soilMoisture?.date && Date.now() - Date.parse(soilMoisture.date) < 72 * 3600_000 ? soilMoisture.percentile : null;
   if (soilPct !== null) {
-    soilScore = soilPct;
     soilDetail = `${soilPct.toFixed(0)}th percentile — ${soilMoisture?.interpretation || ""}`;
   }
 
@@ -916,54 +912,36 @@ async function fetchPredictiveOutlook() {
     recessionDetail = `${loadingGauges.length} gauges loading: ${loadingGauges.map(g => g.name).join(", ")}`;
   }
 
-  // === COMPOSITE SCORE ===
-  const weights = [
-    { name: "Stage Proximity", score: stageScore, weight: 0.25, detail: stageDetail },
-    { name: "Basin Trend", score: basinScore, weight: 0.15, detail: basinDetail },
-    { name: "QPF (48h)", score: qpfScore, weight: 0.20, detail: qpfDetail },
-    { name: "Soil Moisture", score: soilScore, weight: 0.10, detail: soilDetail },
-    { name: "Groundwater", score: gwScore, weight: 0.10, detail: gwDetail },
-    { name: "Confluence Sync", score: confluenceScore, weight: 0.10, detail: confluenceDetail },
-    { name: "Recession Phase", score: recessionScore, weight: 0.10, detail: recessionDetail },
-  ];
-
-  const unavailable = new Set<string>();
-  if (soilPct === null) unavailable.add("Soil Moisture");
-  if (gwDepth === null) unavailable.add("Groundwater");
-  if (!regularGauges.some(g => g.id === "01512500")) unavailable.add("Confluence Sync");
-  for (const f of weights) if (unavailable.has(f.name)) { f.score = 0; f.weight = 0; f.detail = "Unavailable or stale; excluded from score"; }
-  const availableWeight = weights.reduce((sum, f) => sum + f.weight, 0);
-  const compositeScore = Math.round(weights.reduce((sum, f) => sum + f.score * f.weight, 0) / availableWeight);
-  const riskLevel = scoreToRiskLevel(compositeScore) as "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
-
-  const factors = weights
-    .map(f => ({
-      name: f.name,
-      score: Math.round(f.score),
-      weight: f.weight,
-      contribution: Math.round(f.score * f.weight * 10) / 10,
-      detail: f.detail,
-    }))
-    .sort((a, b) => b.contribution - a.contribution);
-
-  // === OUTLOOK (24h, 48h, 72h) ===
-  const qpf24Total = gridpoint.precipitation.next24h.inches;
-  const qpf72Total = gridpoint.precipitation.next72h.inches;
-
-  const calcScore = (qpf: number, recPhase: number) => {
-    let qScore = 0;
-    if (qpf <= 0) qScore = 0;
-    else if (qpf <= 0.5) qScore = 30;
-    else if (qpf <= 1) qScore = 50;
-    else if (qpf <= 2) qScore = 75;
-    else qScore = Math.min(100, 75 + (qpf - 2) * 12.5);
-    return Math.round(weights.reduce((sum, f) => sum +
-      (f.name === "QPF (48h)" ? qScore : f.name === "Recession Phase" ? recPhase : f.score) * f.weight, 0) / availableWeight);
+  const riskInput = {
+    stageScore,
+    stageDetail,
+    basinScore,
+    basinDetail,
+    qpf48Inches: qpf48Total,
+    rain6hInches,
+    windMph,
+    snowInches,
+    rainSnowHours,
+    soilPct,
+    soilDetail,
+    gwScore,
+    gwDetail,
+    gwAvailable: gwDepth !== null,
+    confluenceScore,
+    confluenceDetail,
+    confluenceAvailable: regularGauges.some(g => g.id === "01512500"),
+    recessionScore,
+    recessionDetail,
   };
+  const scored = scoreBasin(riskInput);
+  const compositeScore = scored.compositeScore;
+  const riskLevel = scored.riskLevel;
+  const factors = scored.factors;
+  const unavailable = new Set(factors.filter(factor => factor.weight === 0).map(factor => factor.name));
 
-  const score24 = calcScore(qpf24Total, recessionScore * 0.8);
+  const score24 = horizonScore(riskInput, qpf24Total, recessionScore * 0.8);
   const score48 = compositeScore;
-  const score72 = calcScore(qpf72Total, Math.max(10, recessionScore - 15));
+  const score72 = horizonScore(riskInput, qpf72Total, Math.max(10, recessionScore - 15));
 
   // === HISTORICAL PATTERN MATCHING ===
   function computeSimilarity(flood: typeof HISTORICAL_FLOODS[0]): number {
@@ -1068,7 +1046,7 @@ async function fetchPredictiveOutlook() {
       deescalation: deescalationTrigger,
     },
     generatedAt: new Date().toISOString(),
-    dataCoverage: `${7 - unavailable.size}/7 factors available; ${regularGauges.length} current river gauges`,
+    dataCoverage: `${scored.availableCount}/${factors.length} factors available; ${regularGauges.length} current river gauges`,
     qpf72Complete: gridpoint.precipitation.next72h.coverageHours >= 71,
   };
 }
