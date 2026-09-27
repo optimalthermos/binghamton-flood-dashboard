@@ -78,6 +78,18 @@ export function stormApproachView(width = RADAR_WIDTH, height = RADAR_HEIGHT) {
   return basinView(BASIN_CENTER.latitude, BASIN_CENTER.longitude, 9, width, height);
 }
 
+/** Local-radar-sized sector. Binghamton is the center, not Albany. */
+export function approachRadarView(width = RADAR_WIDTH, height = RADAR_HEIGHT) {
+  return basinView(BASIN_CENTER.latitude, BASIN_CENTER.longitude, 7, width, height);
+}
+
+export const RADAR_PLACES = [
+  { name: "Binghamton", latitude: BASIN_CENTER.latitude, longitude: BASIN_CENTER.longitude },
+  { name: "Scranton", latitude: 41.4089, longitude: -75.6624 },
+  { name: "Elmira", latitude: 42.0898, longitude: -76.8077 },
+  { name: "Oneonta", latitude: 42.4529, longitude: -75.0638 },
+];
+
 export function unproject(pixelX: number, pixelY: number, zoom: number) {
   const scale = 2 ** zoom * TILE;
   const longitude = pixelX / scale * 360 - 180;
@@ -102,11 +114,9 @@ export type RadarFrame =
   | { kind: "observed"; minutesAgo: number }
   | { kind: "forecast"; minutesAhead: number };
 
-/** Observed NEXRAD, then the HRRR simulated-reflectivity forecast through 18 hours. */
+/** Observed NEXRAD every 10 minutes, then the HRRR forecast through 18 hours. */
 export const RADAR_FRAMES: RadarFrame[] = [
-  { kind: "observed", minutesAgo: 60 },
-  { kind: "observed", minutesAgo: 30 },
-  { kind: "observed", minutesAgo: 0 },
+  ...[50, 40, 30, 20, 10, 0].map(minutesAgo => ({ kind: "observed" as const, minutesAgo })),
   ...[60, 120, 180, 240, 360, 480, 720, 1080].map(minutesAhead => ({ kind: "forecast" as const, minutesAhead })),
 ];
 
@@ -166,5 +176,5 @@ export function radarTileUrl(minutesAgo: number, zoom: number, x: number, y: num
 }
 
 export function basemapTileUrl(zoom: number, x: number, y: number) {
-  return `https://basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
+  return `https://basemaps.cartocdn.com/light_all/${zoom}/${x}/${y}.png`;
 }
