@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { CrestReading } from "@shared/floodWatch";
 import type { GaugesResponse, ForecastData, WeatherData, EnsembleData, NewsData, StormPosts } from "@shared/schema";
 import { requestFreshData } from "@/lib/queryClient";
 
@@ -98,6 +99,12 @@ export function useDashboardData() {
     refetchInterval: false,
   });
 
+  const riverForecasts = useQuery<{ sites: CrestReading[] }>({
+    queryKey: ["/api/river-forecasts"],
+    staleTime: REFRESH_INTERVAL,
+    refetchInterval: false,
+  });
+
   const refreshAll = useCallback((includeDaily = false) => {
     if (includeDaily) requestFreshData();
     const keys = [
@@ -162,6 +169,7 @@ export function useDashboardData() {
     webcams,
     communityFeed,
     stormPosts,
+    riverForecasts,
     refreshAll,
     countdown,
     lastRefresh,

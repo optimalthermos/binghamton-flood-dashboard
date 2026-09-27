@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { BASIN_CENTER, BROOME_COUNTY, RADAR_FRAMES, basemapTileUrl, fitCounty, frameLabel, markerPercent, radarOverlayUrl } from "@shared/radar";
+import { BASIN_CENTER, BROOME_COUNTY, RADAR_FRAMES, RADAR_PLACES, approachRadarView, basemapTileUrl, frameLabel, markerPercent, radarOverlayUrl } from "@shared/radar";
 import type { GaugeData } from "@shared/schema";
 
-const view = fitCounty();
+const view = approachRadarView();
 const countyCorners = [
   markerPercent(BROOME_COUNTY.north, BROOME_COUNTY.west, view),
   markerPercent(BROOME_COUNTY.north, BROOME_COUNTY.east, view),
@@ -10,6 +10,18 @@ const countyCorners = [
   markerPercent(BROOME_COUNTY.south, BROOME_COUNTY.west, view),
 ];
 const countyPoints = countyCorners.map(corner => `${corner.left},${corner.top}`).join(" ");
+const places = RADAR_PLACES.flatMap(place => {
+  const spot = markerPercent(place.latitude, place.longitude, view);
+  if (spot.left < 2 || spot.left > 98 || spot.top < 2 || spot.top > 98) return [];
+  return [{ ...place, ...spot }];
+});
+
+const REFLECTIVITY = [
+  { color: "#9be7a3", label: "Light" },
+  { color: "#3fbf3f", label: "Moderate" },
+  { color: "#f7e35a", label: "Heavy" },
+  { color: "#e23b2f", label: "Intense" },
+];
 
 export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData[]; refreshKey?: number }) {
   const [frame, setFrame] = useState(0);
@@ -41,7 +53,7 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
 
   return (
     <div>
-      <div className="relative overflow-hidden rounded-lg bg-[#0b1220]" style={{ aspectRatio: `${view.width} / ${view.height}` }}>
+      <div className="relative overflow-hidden rounded-lg bg-[#e8eef4]" style={{ aspectRatio: `${view.width} / ${view.height}` }}>
         {view.tiles.map(tile => (
           <img
             key={`base-${tile.x}-${tile.y}`}
@@ -56,14 +68,23 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
           <img
             key={`radar-${frameLabel(current)}-${refreshKey}-${liveTick}`}
             src={radarOverlayUrl(current, view)}
-            alt="Radar reflectivity over Broome County, New York"
-            className="absolute inset-0 h-full w-full mix-blend-screen"
+            alt="Radar reflectivity centered on Binghamton, New York"
+            className="absolute inset-0 h-full w-full"
             onError={() => setOverlayFailed(true)}
           />
         )}
         <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          <polygon points={countyPoints} fill="none" stroke="rgba(251,191,36,0.9)" strokeWidth="0.6" />
+          <polygon points={countyPoints} fill="none" stroke="rgba(180,83,9,0.95)" strokeWidth="0.45" />
         </svg>
+        {places.map(place => (
+          <div
+            key={place.name}
+            className="pointer-events-none absolute -translate-x-1/2 text-[10px] font-semibold text-slate-900"
+            style={{ left: `${place.left}%`, top: `${place.top}%`, textShadow: "0 0 3px #fff, 0 0 3px #fff" }}
+          >
+            {place.name}
+          </div>
+        ))}
         {markers.map(gauge => {
           const spot = markerPercent(gauge.latitude!, gauge.longitude!, view);
           if (spot.left < 0 || spot.left > 100 || spot.top < 0 || spot.top > 100) return null;
@@ -74,32 +95,40 @@ export function BasinRadar({ gauges = [], refreshKey = 0 }: { gauges?: GaugeData
               style={{ left: `${spot.left}%`, top: `${spot.top}%` }}
               title={`${gauge.name}: ${gauge.stage ?? "—"} ft`}
             >
-              <div className={`h-2.5 w-2.5 rounded-full border border-white ${gauge.isBinghamton ? "bg-amber-400" : "bg-sky-400"}`} />
-              {["01503500", "01503000", "01512500", "01513500", "01502731"].includes(gauge.id) && (
-                <div className="mt-0.5 whitespace-nowrap text-[9px] font-medium text-white drop-shadow">{gauge.name}</div>
+              <div className={`h-2 w-2 rounded-full border border-white ${gauge.isBinghamton ? "bg-amber-500" : "bg-sky-600"}`} />
+              {gauge.id !== "01503500" && ["01503000", "01512500", "01513500", "01502731"].includes(gauge.id) && (
+                <div className="mt-0.5 hidden whitespace-nowrap text-[9px] font-medium text-slate-900 drop-shadow sm:block">{gauge.name}</div>
               )}
             </div>
           );
         })}
         <div
-          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-300"
+          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-700"
           style={{ left: `${markerPercent(BASIN_CENTER.latitude, BASIN_CENTER.longitude, view).left}%`, top: `${markerPercent(BASIN_CENTER.latitude, BASIN_CENTER.longitude, view).top}%` }}
           title="Susquehanna and Chenango meet at Binghamton"
         />
         {broken && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-sm text-white">Basemap unavailable. Try refreshing.</div>
+          <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-sm text-slate-800">Basemap unavailable. Try refreshing.</div>
         )}
         {!broken && overlayFailed && (
-          <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white/80">This frame is unavailable from the provider.</div>
+          <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-slate-800">This frame is unavailable from the provider.</div>
         )}
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-        <span>Broome County, NY · {frameLabel(current)}</span>
-        <button type="button" className="rounded border border-border px-2 py-0.5" onClick={() => setPlaying(value => !value)}>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+        <span className="mr-auto">Centered on Binghamton · {frameLabel(current)}</span>
+        {REFLECTIVITY.map(step => (
+          <span key={step.label} className="inline-flex items-center gap-1">
+            <span className="inline-block h-2.5 w-2.5 rounded-sm border border-black/10" style={{ background: step.color }} />
+            {step.label}
+          </span>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center justify-end">
+        <button type="button" className="h-11 rounded border border-border px-4 text-sm" onClick={() => setPlaying(value => !value)}>
           {playing ? "Pause" : "Play"}
         </button>
       </div>
-      <p className="mt-1 text-[10px] text-muted-foreground">Past frames are observed NEXRAD. Future frames are the HRRR simulated reflectivity forecast, not a warning. The amber box is Broome County. © OpenStreetMap © CARTO · Iowa Environmental Mesonet</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">Centered on Binghamton. The amber box is Broome County. Past frames are observed NEXRAD every 10 minutes. Future frames are the HRRR simulated reflectivity forecast, not a warning. © OpenStreetMap © CARTO · Iowa Environmental Mesonet</p>
     </div>
   );
 }

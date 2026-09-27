@@ -23,6 +23,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ReferenceLine,
   Legend, ResponsiveContainer, LineChart, Line, BarChart, Bar, Tooltip as RechartsTooltip,
 } from "recharts";
+import { CREST_SITES, crestStatement, officialFloodProducts, type CrestReading } from "@shared/floodWatch";
 import { STORM_SEARCH_URL } from "@shared/stormPosts";
 import type {
   GaugeData, WeatherData, GaugesResponse, EnsembleData, NewsData,
@@ -1619,6 +1620,13 @@ function StormBand({
   stormPosts,
   postsLoading = false,
   refreshToken = 0,
+  news,
+  newsLoading = false,
+  newsError = false,
+  riverForecasts,
+  riverLoading = false,
+  riverError = false,
+  outlook,
 }: {
   gauges?: GaugeData[];
   forecast?: ForecastData;
@@ -1626,18 +1634,32 @@ function StormBand({
   stormPosts?: StormPosts;
   postsLoading?: boolean;
   refreshToken?: number;
+  news?: NewsData;
+  newsLoading?: boolean;
+  newsError?: boolean;
+  riverForecasts?: { sites?: CrestReading[] };
+  riverLoading?: boolean;
+  riverError?: boolean;
+  outlook?: PredictiveOutlook;
 }) {
   const storm = forecast?.afd.norEaster;
   const weekend = (weather?.forecast || []).filter(period => /saturday|sunday|monday/i.test(period.name)).slice(0, 6);
   const posts = stormPosts?.posts || [];
   const searchUrl = stormPosts?.searchUrl || STORM_SEARCH_URL;
+  const floodProducts = officialFloodProducts(news?.alerts || []);
+  const soil = outlook?.factors.find(factor => factor.name === "Soil Moisture");
+  const rain6 = outlook?.factors.find(factor => factor.name === "Peak 6h rain");
+  const crests = CREST_SITES.map(site => {
+    const reading = riverForecasts?.sites?.find(item => item.id === site.id);
+    return crestStatement({ ...reading, id: site.id, name: site.name });
+  });
 
   return (
     <Card className="bg-card border-border">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">Nor&apos;easter — Broome County</CardTitle>
         <p className="text-[10px] text-muted-foreground">
-          Observed NEXRAD, then the HRRR reflectivity forecast, framed on Broome County. The text forecast is NWS Binghamton{forecast?.afd.issuedAt ? `, issued ${forecast.afd.issuedAt}` : ""}. Posts on X are not a warning.
+          Observed NEXRAD every 10 minutes, then the HRRR reflectivity forecast, centered on Binghamton. The amber box is Broome County. The text forecast is NWS Binghamton{forecast?.afd.issuedAt ? `, issued ${forecast.afd.issuedAt}` : ""}. Posts on X are not a warning.
         </p>
       </CardHeader>
       <CardContent>
@@ -1646,6 +1668,35 @@ function StormBand({
             <BasinRadar gauges={gauges} refreshKey={refreshToken} />
           </div>
           <div className="xl:col-span-4 space-y-3">
+            <div className="space-y-1 rounded border border-border p-2">
+              <p className="text-[11px] font-medium">Official flood products</p>
+              {newsLoading && <p className="text-xs text-muted-foreground">Checking NWS alerts…</p>}
+              {!newsLoading && (newsError || news?.stale || news?.error) && (
+                <p className="text-xs text-muted-foreground">The alert feed is unavailable, so a Flood Watch cannot be confirmed.</p>
+              )}
+              {!newsLoading && !newsError && !news?.stale && !news?.error && floodProducts.length === 0 && (
+                <p className="text-xs text-muted-foreground">No Flood Watch or Flood Warning is in effect for Broome, Tioga, Chenango, or Delaware County.</p>
+              )}
+              {floodProducts.map(alert => (
+                <div key={alert.url || alert.headline} className="text-xs">
+                  <a href={alert.url} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline">{alert.headline}</a>
+                  {alert.expires && <p className="text-muted-foreground">Until {new Date(alert.expires).toLocaleString()}</p>}
+                </div>
+              ))}
+              <p className="text-[11px] font-medium pt-1">River forecast crests</p>
+              <p className="text-[10px] text-muted-foreground">Official NWPS crests. They are not part of the experimental score, and they are not a Flood Watch.</p>
+              {riverLoading && <p className="text-xs text-muted-foreground">Checking the river forecast…</p>}
+              {!riverLoading && riverError && <p className="text-xs text-muted-foreground">Forecast crests unpublished.</p>}
+              {!riverLoading && !riverError && crests.map(line => (
+                <p key={line} className="text-xs">{line}</p>
+              ))}
+              <p className="text-[10px] text-muted-foreground">
+                {rain6 ? `${rain6.detail}. ` : ""}The 6-hour rain total is not compared with official flash-flood guidance, which is not in this feed.
+              </p>
+              {soil && soil.weight === 0 && (
+                <p className="text-[10px] text-muted-foreground">Soil moisture is excluded from the experimental score because the observation is stale or missing.</p>
+              )}
+            </div>
             {storm?.headline && <p className="text-sm">{storm.headline}</p>}
             {storm?.detail && (
               <p className="max-h-48 overflow-y-auto text-xs text-muted-foreground leading-relaxed">{storm.detail}</p>
@@ -1695,9 +1746,23 @@ function StormBand({
   );
 }
 
+function useAtLeastLg() {
+  const query = "(min-width: 1024px)";
+  const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const onChange = () => setMatches(media.matches);
+    onChange();
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+  return matches;
+}
+
 // === Broome radar, with Northeast-wide upper-air charts as secondary tabs. ===
 function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refreshToken?: number }) {
   const [activeTab, setActiveTab] = useState<"radar" | "pwat" | "850mb">("radar");
+  const wide = useAtLeastLg();
   const [refreshKey, setRefreshKey] = useState(0);
   useEffect(() => { if (refreshToken) setRefreshKey(k => k + 1); }, [refreshToken]);
   const [failed, setFailed] = useState(false);
@@ -1731,7 +1796,10 @@ function ImageryPanel({ gauges, refreshToken = 0 }: { gauges?: GaugeData[]; refr
       </CardHeader>
       <CardContent>
         <div className="relative bg-muted/30 rounded-lg overflow-hidden">
-          {activeTab === "radar" && <BasinRadar gauges={gauges} refreshKey={refreshKey} />}
+          {activeTab === "radar" && wide && <BasinRadar gauges={gauges} refreshKey={refreshKey} />}
+          {activeTab === "radar" && !wide && (
+            <p className="p-4 text-xs text-muted-foreground">The Broome loop is the map at the top of the page.</p>
+          )}
           {failed && activeTab !== "radar" && <div className="p-8 text-sm text-muted-foreground">Image unavailable from the provider. Try refreshing.</div>}
           {!failed && activeTab !== "radar" && (
             <img
@@ -1995,7 +2063,7 @@ export default function Dashboard() {
   const {
     gauges, forecast, weather, ensemble, news,
     groundwater, surfaceObs, gridpointData, historicalStats, soilMoisture,
-    predictiveOutlook, webcams, communityFeed, stormPosts,
+    predictiveOutlook, webcams, communityFeed, stormPosts, riverForecasts,
     refreshAll, countdown, lastRefresh,
     isAnyLoading, connectionStatus, isDataStale,
   } = useDashboardData();
@@ -2060,6 +2128,13 @@ export default function Dashboard() {
             stormPosts={stormPosts.data}
             postsLoading={stormPosts.isLoading}
             refreshToken={lastRefresh.getTime()}
+            news={news.data}
+            newsLoading={news.isLoading}
+            newsError={news.isError}
+            riverForecasts={riverForecasts.data}
+            riverLoading={riverForecasts.isLoading}
+            riverError={riverForecasts.isError}
+            outlook={outlookData}
           />
 
           {/* KPI Row */}
